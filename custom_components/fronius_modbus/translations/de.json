@@ -365,7 +365,7 @@
         }
       },
       "max_charge": {
-        "name": "Maximale Ladeleistung"
+        "name": "Lade-Referenzwert"
       },
       "storage_charge_current": {
         "name": "Speicher-Ladestrom"
