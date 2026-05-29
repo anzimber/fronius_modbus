@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from . import hub, migrations
 from .const import (
     API_USERNAME,
+    TECHNICIAN_USERNAME,
     CONF_INVERTER_UNIT_ID,
     CONF_RESTRICT_MODBUS_TO_THIS_IP,
     DEFAULT_INVERTER_UNIT_ID,
@@ -59,6 +60,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
     api_token = await migrations.async_prepare_entry_token(hass, entry, host)
     await migrations.async_sync_reconfigure_issue(hass, entry, has_token=api_token is not None)
 
+    from .token_store import async_get_token_store
+    tech_token = await async_get_token_store(hass).async_load_token(host, TECHNICIAN_USERNAME)
+    _LOGGER.debug("Technician token for %s: %s", host, "found" if tech_token else "not found")
+
     entry.runtime_data = hub.Hub(
         hass=hass,
         name=name,
@@ -69,6 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
         scan_interval=scan_interval,
         api_username=API_USERNAME if api_token else None,
         api_token=api_token,
+        tech_token=tech_token,
         auto_enable_modbus=False,
         restrict_modbus_to_this_ip=restrict_modbus_to_this_ip,
     )

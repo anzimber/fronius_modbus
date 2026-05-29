@@ -4,6 +4,7 @@ from .const import (
     STORAGE_API_NUMBER_TYPES,
     STORAGE_MODBUS_NUMBER_TYPES,
     INVERTER_NUMBER_TYPES,
+    INVERTER_WEB_NUMBER_TYPES,
 )
 
 from homeassistant.components.number import (
@@ -87,6 +88,30 @@ async def async_setup_entry(hass, config_entry, async_add_entities) -> None:
         )
         entities.append(number)
 
+    if hub.web_api_configured:
+        for number_info in INVERTER_WEB_NUMBER_TYPES:
+            max_val = number_info[2]['max']
+            max_key = number_info[2].get('max_key')
+            if max_key is not None:
+                dynamic_max = hub.data.get(max_key)
+                if isinstance(dynamic_max, (int, float)) and dynamic_max > 0:
+                    max_val = dynamic_max
+
+            number = FroniusModbusNumber(
+                coordinator=coordinator,
+                device_info=hub.device_info_inverter,
+                name=number_info[0],
+                key=number_info[1],
+                translation_key=number_info[0],
+                min_val=number_info[2]['min'],
+                max_val=max_val,
+                unit=number_info[2]['unit'],
+                mode=number_info[2]['mode'],
+                native_step=number_info[2]['step'],
+                hub=hub,
+            )
+            entities.append(number)
+
     async_add_entities(entities)
     return True
 
@@ -156,6 +181,8 @@ class FroniusModbusNumber(FroniusModbusBaseEntity, NumberEntity):
             await self._hub.set_api_battery_power(value)
         elif self._key == 'soc_maximum':
             await self._hub.set_api_soc_values(soc_max=int(round(value)))
+        elif self._key == 'export_soft_limit':
+            await self._hub.set_export_soft_limit(value)
 
         self.async_write_ha_state()
 
@@ -189,4 +216,6 @@ class FroniusModbusNumber(FroniusModbusBaseEntity, NumberEntity):
                 self._hub.web_api_configured
                 and data.get('api_battery_mode_effective_raw') == 1
             )
+        if self._key == 'export_soft_limit':
+            return self._hub.web_api_configured
         return False

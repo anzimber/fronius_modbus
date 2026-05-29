@@ -376,7 +376,7 @@ class FroniusWebClient:
         timeout: float = 4.0,
     ) -> None:
         self._host = host
-        self._username = API_USERNAME
+        self._username = username if username is not None else API_USERNAME
         self._password = password
         self._timeout = timeout
         self._auth = XHeaderDigestAuth(
@@ -595,3 +595,21 @@ class FroniusWebClient:
             "HYB_BM_CHARGEFROMAC": bool(charge_from_ac),
         }
         return self._post_ok("/api/config/batteries", payload)
+
+    def get_export_limit_config(self) -> dict[str, Any]:
+        """Read current Export Limit Control configuration from the inverter."""
+        try:
+            return self._get_json("/api/config/limit_settings/powerLimits")
+        except requests.HTTPError:
+            return {}
+
+    def set_export_soft_limit(self, power_w: int) -> bool:
+        """Set Export Limit Control (Soft Limit) in watts.
+
+        Reads the current config, patches only the softLimit fields, and writes back.
+        Mirrors read_export_limit.py: only modifies softLimit, leaves everything else unchanged.
+        """
+        config = self._get_json("/api/config/limit_settings/powerLimits")
+        config["exportLimits"]["activePower"]["softLimit"]["enabled"] = True
+        config["exportLimits"]["activePower"]["softLimit"]["powerLimit"] = int(power_w)
+        return self._post_ok("/api/config/limit_settings/powerLimits", config)

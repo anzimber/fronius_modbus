@@ -55,6 +55,7 @@ WEB_API_DATA_KEYS = (
     "api_backup_reserved",
     "api_charge_from_ac",
     "api_charge_from_grid",
+    "export_soft_limit",
 )
 
 BATTERY_WRITE_MODBUS_RECOVERY_SECONDS = 30.0
@@ -143,6 +144,7 @@ class Hub:
         api_username: str | None = None,
         api_password: str | None = None,
         api_token: dict[str, str] | None = None,
+        tech_token: dict[str, str] | None = None,
         auto_enable_modbus: bool = True,
         restrict_modbus_to_this_ip: bool = False,
     ) -> None:
@@ -158,6 +160,7 @@ class Hub:
         self._auto_enable_modbus = auto_enable_modbus
         self._restrict_modbus_to_this_ip = restrict_modbus_to_this_ip
         self._webclient: FroniusWebClient | None = None
+        self._tech_webclient: FroniusWebClient | None = None
 
         self._id = f'{name.lower()}_{host.lower().replace('.','')}'
         self.online = True
@@ -169,6 +172,13 @@ class Hub:
                 username=api_username,
                 password=api_password or "",
                 token=api_token,
+            )
+        if tech_token:
+            from .const import TECHNICIAN_USERNAME
+            self._tech_webclient = FroniusWebClient(
+                host=host,
+                username=TECHNICIAN_USERNAME,
+                token=tech_token,
             )
         self._scan_interval = timedelta(seconds=scan_interval)
         self.coordinator = None
@@ -560,6 +570,18 @@ class Hub:
                 data={"entry_id": self._config_entry.entry_id},
             )
 
+    async def _async_tech_web_job(self, func, *args):
+        """Run a tech-client job; on auth failure clear only _tech_webclient."""
+        if not self._tech_webclient:
+            return None
+        try:
+            return await self._hass.async_add_executor_job(func, *args)
+        except FroniusWebAuthError as err:
+            _LOGGER.warning("Disabling Fronius technician web API for %s after auth failure: %s", self._host, err)
+            self._tech_webclient = None
+            self.data["export_soft_limit"] = None
+            return None
+
     async def _async_web_job(
         self,
         func,
@@ -708,6 +730,25 @@ class Hub:
             battery_config = await self._async_web_job(self._webclient.get_battery_config)
             if isinstance(battery_config, dict):
                 self._apply_web_battery_config(battery_config)
+
+        if self._tech_webclient:
+            export_limit_config = await self._async_tech_web_job(self._tech_webclient.get_export_limit_config)
+        elif self._webclient:
+            export_limit_config = await self._async_web_job(self._webclient.get_export_limit_config)
+        else:
+            export_limit_config = None
+        _LOGGER.debug("Export limit config from web API: %s", export_limit_config)
+        if isinstance(export_limit_config, dict) and export_limit_config:
+            soft = (
+                export_limit_config.get("exportLimits", {})
+                .get("activePower", {})
+                .get("softLimit", {})
+            )
+            if isinstance(soft, dict):
+                if soft.get("enabled"):
+                    self.data["export_soft_limit"] = soft.get("powerLimit")
+                else:
+                    self.data["export_soft_limit"] = None
 
         await self._async_sync_solar_api_warning()
 
@@ -938,6 +979,10 @@ class Hub:
         return self._webclient is not None
 
     @property
+    def tech_configured(self) -> bool:
+        return self._tech_webclient is not None
+
+    @property
     def meter_configured(self):
         return self._client.meter_configured
 
@@ -1139,3 +1184,12 @@ class Hub:
 
     async def set_conn_status(self, enable):
         await self._client.set_conn_status(enable)
+
+    async def set_export_soft_limit(self, value: float) -> None:
+        if not self._tech_webclient:
+            raise RuntimeError("Technician credentials not configured — enter the technician password via Configure")
+        await self._async_tech_web_job(
+            self._tech_webclient.set_export_soft_limit,
+            int(round(value)),
+        )
+        self.data["export_soft_limit"] = int(round(value))

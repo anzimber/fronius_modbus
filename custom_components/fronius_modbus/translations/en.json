@@ -15,7 +15,11 @@
         "title": "Customer Password",
         "description": "Enter the customer password to create or refresh the stored token. The password is not stored in the config entry.",
         "data": {
-          "api_password": "Customer password"
+          "api_password": "Customer password",
+          "technician_password": "Technician password (optional)"
+        },
+        "data_description": {
+          "technician_password": "Required to enable the Export Limit Control (Soft Limit) setter. Leave empty to skip."
         }
       },
       "reconfigure": {
@@ -31,7 +35,11 @@
         "title": "Customer Password",
         "description": "Enter the customer password to create or refresh the stored token.",
         "data": {
-          "api_password": "Customer password"
+          "api_password": "Customer password",
+          "technician_password": "Technician password (optional)"
+        },
+        "data_description": {
+          "technician_password": "Required to enable the Export Limit Control (Soft Limit) setter. Leave empty to skip."
         }
       }
     },
@@ -84,6 +92,9 @@
       },
       "power_factor": {
         "name": "Power factor"
+      },
+      "export_soft_limit": {
+        "name": "Export soft limit"
       }
     },
     "select": {
@@ -297,6 +308,9 @@
       },
       "ac_limit_rate": {
         "name": "AC limit rate"
+      },
+      "export_soft_limit": {
+        "name": "Export soft limit"
       },
       "ac_limit_enable": {
         "name": "AC limit enabled",
@@ -563,7 +577,11 @@
         "title": "Customer Password",
         "description": "Enter the customer password to create or refresh the stored token.",
         "data": {
-          "api_password": "Customer password"
+          "api_password": "Customer password",
+          "technician_password": "Technician password (optional)"
+        },
+        "data_description": {
+          "technician_password": "Required to enable the Export Limit Control (Soft Limit) setter. Leave empty to skip."
         }
       }
     },

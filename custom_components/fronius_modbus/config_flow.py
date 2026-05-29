@@ -27,6 +27,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     API_USERNAME,
+    TECHNICIAN_USERNAME,
     SUPPORTED_MANUFACTURERS,
     SUPPORTED_MODELS,
 )
@@ -175,7 +176,13 @@ def _build_password_schema() -> vol.Schema:
                     type=TextSelectorType.PASSWORD,
                     autocomplete="current-password",
                 )
-            )
+            ),
+            vol.Optional("technician_password", default=""): TextSelector(
+                TextSelectorConfig(
+                    type=TextSelectorType.PASSWORD,
+                    autocomplete="current-password",
+                )
+            ),
         }
     )
 
@@ -260,6 +267,7 @@ async def _async_mint_token(
     hass: HomeAssistant,
     host: str,
     password: str,
+    username: str = API_USERNAME,
 ) -> dict[str, str]:
     password = str(password).strip()
     if password == "":
@@ -269,7 +277,7 @@ async def _async_mint_token(
         token = await hass.async_add_executor_job(
             mint_token,
             host,
-            API_USERNAME,
+            username,
             password,
         )
     except Exception as err:
@@ -465,6 +473,23 @@ class TokenFlowMixin:
                     user_input.get(CONF_API_PASSWORD, ""),
                 )
                 await _async_save_token(self.hass, state.settings[CONF_HOST], token)
+                tech_password = str(user_input.get("technician_password", "")).strip()
+                if tech_password:
+                    try:
+                        tech_token = await _async_mint_token(
+                            self.hass,
+                            state.settings[CONF_HOST],
+                            tech_password,
+                            username=TECHNICIAN_USERNAME,
+                        )
+                        await async_get_token_store(self.hass).async_save_token(
+                            state.settings[CONF_HOST],
+                            realm=tech_token["realm"],
+                            token=tech_token["token"],
+                            user=TECHNICIAN_USERNAME,
+                        )
+                    except Exception:
+                        _LOGGER.warning("Failed to store technician token, export limit control will be unavailable")
                 info = await _validate_input(
                     self.hass,
                     state.settings,
