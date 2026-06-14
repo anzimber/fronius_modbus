@@ -385,16 +385,6 @@ class Hub:
         """Initialize data and coordinator."""
         self._config_entry = config_entry
         await self._hass.async_add_executor_job(self.check_pymodbus_version)
-        if apply_modbus_config and self.web_api_configured and self._auto_enable_modbus:
-            enabled = await self._async_web_job(
-                self._webclient.ensure_modbus_enabled,
-                self._port,
-                self._client.primary_meter_unit_id,
-                self._inverter_unit_id,
-                self._restrict_modbus_to_this_ip,
-            )
-            if enabled:
-                await asyncio.sleep(1.0)
         meter_phase_counts: dict[int, int] = {}
         meter_locations: dict[int, int] = {}
         if self.web_api_configured:
@@ -443,6 +433,16 @@ class Hub:
                     "Keeping existing smart meter unit ids for %s because PowerMeter payload contained no usable meters",
                     self._host,
                 )
+        if apply_modbus_config and self.web_api_configured and self._auto_enable_modbus:
+            enabled = await self._async_web_job(
+                self._webclient.ensure_modbus_enabled,
+                self._port,
+                self._client.primary_meter_unit_id,
+                self._inverter_unit_id,
+                self._restrict_modbus_to_this_ip,
+            )
+            if enabled:
+                await asyncio.sleep(1.0)
         await self._client.init_data()
         for unit_id in self._client._meter_unit_ids:
             phase_count = meter_phase_counts.get(unit_id)
