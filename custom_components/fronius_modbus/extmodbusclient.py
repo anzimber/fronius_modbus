@@ -113,7 +113,7 @@ class ExtModbusClient:
             if isinstance(data,ModbusIOException):
                 if retries < 1:
                     _LOGGER.debug(f"IO Error: {data}. Retrying...")
-                    return await self.get_registers(address=address, count=count, retries = retries + 1)
+                    return await self.get_registers(unit_id=unit_id, address=address, count=count, retries = retries + 1)
                 else:
                     _LOGGER.error(f"error reading register: {address} count: {count} unit id: {unit_id} error: {data} ")
             else:
