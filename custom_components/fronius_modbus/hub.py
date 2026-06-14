@@ -738,6 +738,7 @@ class Hub:
         else:
             export_limit_config = None
         _LOGGER.debug("Export limit config from web API: %s", export_limit_config)
+        self.data["export_soft_limit"] = None
         if isinstance(export_limit_config, dict) and export_limit_config:
             soft = (
                 export_limit_config.get("exportLimits", {})
@@ -747,8 +748,6 @@ class Hub:
             if isinstance(soft, dict):
                 if soft.get("enabled"):
                     self.data["export_soft_limit"] = soft.get("powerLimit")
-                else:
-                    self.data["export_soft_limit"] = None
 
         await self._async_sync_solar_api_warning()
 
