@@ -35,6 +35,12 @@ class ExtModbusClient:
         """Disconnect client."""
         self._client.close()
 
+    def _close_after_transport_error(self) -> None:
+        try:
+            self.close()
+        except Exception as err:
+            _LOGGER.debug("Error closing Modbus client after transport failure: %s", err)
+
     async def connect(self, retries = 3):
         """Connect client."""
         for attempts in range(retries): 
@@ -75,21 +81,23 @@ class ExtModbusClient:
 
     async def read_holding_registers(self, unit_id, address, count, retries = 3):
         """Read holding registers."""
-        await self._check_and_reconnect()
-
         data = None
         for attempt in range(retries+1):
+            await self._check_and_reconnect()
             try:
                 data = await self._client.read_holding_registers(address=address, count=count, device_id=unit_id)
             except ModbusIOException as e:
+                self._close_after_transport_error()
                 _LOGGER.debug(f'error reading registers. IO error retries: {attempt}/{retries} connected: {self._client.connected} address: {address} count: {count} unit id: {unit_id} error: {e}')
                 await asyncio.sleep(.2)
                 continue
             except ConnectionException as e:
+                self._close_after_transport_error()
                 _LOGGER.debug(f'error reading registers. connection exception retries: {attempt}/{retries} connected: {self._client.connected} address: {address} count: {count} unit id: {unit_id} {e} ')
                 await asyncio.sleep(.2)
                 continue
             except Exception as e:
+                self._close_after_transport_error()
                 _LOGGER.debug(f'error reading registers. unknown error retries: {attempt}/{retries} connected {self._client.connected} address: {address} count: {count} unit id: {unit_id} type {type(e)} error {e} ')
                 await asyncio.sleep(.2)
                 continue
@@ -136,10 +144,13 @@ class ExtModbusClient:
         try:
             result = await self._client.write_registers(address=address, values=payload, device_id=unit_id)
         except ModbusIOException as e:
+            self._close_after_transport_error()
             raise Exception(f'write_registers: IO error {self._client.connected} {e.fcode} {e}')
         except ConnectionException as e:
+            self._close_after_transport_error()
             raise Exception(f'write_registers: no connection {self._client.connected} {e} ')
         except Exception as e:
+            self._close_after_transport_error()
             raise Exception(f'write_registers: unknown error {self._client.connected} {type(e)} {e} ')
 
         if result.isError():
