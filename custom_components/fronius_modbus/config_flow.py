@@ -264,7 +264,9 @@ async def _async_save_token(hass: HomeAssistant, host: str, token: dict[str, str
 
 async def _async_delete_token(hass: HomeAssistant, host: str | None) -> None:
     if host:
-        await async_get_token_store(hass).async_delete_token(host, API_USERNAME)
+        token_store = async_get_token_store(hass)
+        await token_store.async_delete_token(host, API_USERNAME)
+        await token_store.async_delete_token(host, TECHNICIAN_USERNAME)
 
 
 async def _async_mint_token(
