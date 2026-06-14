@@ -737,12 +737,13 @@ class FroniusModbusClient(ExtModbusClient):
             (
                 ('WMax', 0, 1, dt.UINT16), ('VRef', 1, 1, dt.UINT16), ('VRefOfs', 2, 1, dt.UINT16),
                 ('WMax_SF', 20, 1, dt.INT16), ('VRef_SF', 21, 1, dt.INT16),
+                ('VRefOfs_SF', 22, 1, dt.INT16),
             ),
         )
 
         self._set_calculated('max_power', raw['WMax'], raw['WMax_SF'], 2, 0, 50000)
         self._set_calculated('vref', raw['VRef'], raw['VRef_SF'])
-        self._set_calculated('vrefofs', raw['VRefOfs'], raw['VRef_SF'])
+        self._set_calculated('vrefofs', raw['VRefOfs'], raw['VRefOfs_SF'])
 
         return True
 
