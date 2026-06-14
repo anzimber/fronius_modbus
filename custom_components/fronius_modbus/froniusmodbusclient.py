@@ -704,7 +704,7 @@ class FroniusModbusClient(ExtModbusClient):
             (
                 ('PVConn', 0, 1, dt.UINT16), ('StorConn', 1, 1, dt.UINT16),
                 ('ECPConn', 2, 1, dt.UINT16), ('StActCtl', 33, 2, dt.UINT32),
-                ('Ris', 42, 1, dt.UINT16), ('Ris_SF', 43, 1, dt.UINT16),
+                ('Ris', 42, 1, dt.UINT16), ('Ris_SF', 43, 1, dt.INT16),
             ),
         )
 
@@ -1271,7 +1271,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_grid_charge_power(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode != 4:
-            return
+            raise ValueError("Grid charge power can only be changed in Charge from Grid mode")
         await self.set_discharge_rate_w(value * -1)
         percent = (value / self.max_charge_rate_w) * 100 if self.max_charge_rate_w else 0
         self.data['grid_charge_power'] = percent
@@ -1279,7 +1279,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_grid_discharge_power(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode != 5:
-            return
+            raise ValueError("Grid discharge power can only be changed in Discharge to Grid mode")
         await self.set_charge_rate_w(value * -1)
         percent = (value / self.max_discharge_rate_w) * 100 if self.max_discharge_rate_w else 0
         self.data['grid_discharge_power'] = percent
@@ -1287,7 +1287,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_charge_limit(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode not in [1, 3, 6]:
-            return
+            raise ValueError("Charge limit cannot be changed in the current storage mode")
         await self.set_charge_rate_w(value)
         percent = (value / self.max_charge_rate_w) * 100 if self.max_charge_rate_w else 0
         self.data['charge_limit'] = percent
@@ -1295,7 +1295,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_discharge_limit(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode not in [2, 3, 7]:
-            return
+            raise ValueError("Discharge limit cannot be changed in the current storage mode")
         await self.set_discharge_rate_w(value)
         percent = (value / self.max_discharge_rate_w) * 100 if self.max_discharge_rate_w else 0
         self.data['discharge_limit'] = percent

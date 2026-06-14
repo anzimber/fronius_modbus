@@ -16,6 +16,13 @@ from .base import FroniusModbusBaseEntity, async_ensure_translation_cache
 
 _LOGGER = logging.getLogger(__name__)
 
+_STORAGE_PERCENT_NUMBER_KEYS = {
+    'grid_discharge_power',
+    'discharge_limit',
+    'grid_charge_power',
+    'charge_limit',
+}
+
 async def async_setup_entry(hass, config_entry, async_add_entities) -> None:
     await async_ensure_translation_cache(hass)
     hub: Hub = config_entry.runtime_data
@@ -152,12 +159,15 @@ class FroniusModbusNumber(FroniusModbusBaseEntity, NumberEntity):
     def native_value(self):
         """Return the native number value."""
         if self.coordinator.data and self._key in self.coordinator.data:
+            value = self.coordinator.data[self._key]
+            if value is None:
+                return None
             if self._key in ['grid_discharge_power', 'discharge_limit']:
-                return round(self.coordinator.data[self._key] / 100.0 * self._hub.max_discharge_rate_w, 0)
+                return round(value / 100.0 * self._hub.max_discharge_rate_w, 0)
             elif self._key in ['grid_charge_power', 'charge_limit']:
-                return round(self.coordinator.data[self._key] / 100.0 * self._hub.max_charge_rate_w, 0)
+                return round(value / 100.0 * self._hub.max_charge_rate_w, 0)
             else:
-                return self.coordinator.data[self._key]
+                return value
         return None
 
     async def async_set_native_value(self, value: float) -> None:
@@ -192,6 +202,8 @@ class FroniusModbusNumber(FroniusModbusBaseEntity, NumberEntity):
         data = self.coordinator.data if isinstance(self.coordinator.data, dict) else {}
         if not super().available:
             return False
+        if self._key in _STORAGE_PERCENT_NUMBER_KEYS and data.get(self._key) is None:
+            return False
         if self._key == 'soc_minimum':
             return True
         if self._key == 'charge_limit' and self._hub.storage_extended_control_mode in [1,3,6]:
@@ -217,5 +229,5 @@ class FroniusModbusNumber(FroniusModbusBaseEntity, NumberEntity):
                 and data.get('api_battery_mode_effective_raw') == 1
             )
         if self._key == 'export_soft_limit':
-            return self._hub.web_api_configured
+            return self._hub.tech_configured
         return False
