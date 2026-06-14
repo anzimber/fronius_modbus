@@ -44,6 +44,13 @@ APPLY_TOGGLE_DELAY_SECONDS = 1.0
 APPLY_TOGGLE_MASK_SECONDS = APPLY_TOGGLE_DELAY_SECONDS + 0.5
 
 
+def _is_power_meter_model(model: str | None) -> bool:
+    if not model:
+        return False
+    model_l = model.lower()
+    return "meter" in model_l or "wattnode" in model_l or "42,0411" in model_l
+
+
 def _safe_read(label: str):
     def decorator(func):
         @wraps(func)
@@ -572,9 +579,8 @@ class FroniusModbusClient(ExtModbusClient):
             if not result:
                 continue
 
-            manufacturer = str(self.data.get(prefix + "manufacturer") or "").strip()
             model = str(self.data.get(prefix + "model") or "").strip()
-            if manufacturer == "Fronius" and ("meter" in model.lower() or "wattnode" in model.lower() or "42,0411" in model.lower()):
+            if _is_power_meter_model(model):
                 discovered_meter_unit_ids.append(unit_id)
 
         self._meter_unit_ids = discovered_meter_unit_ids
