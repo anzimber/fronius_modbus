@@ -13,7 +13,7 @@
       },
       "user_password": {
         "title": "Kundenpasswort",
-        "description": "Gib das Kundenpasswort ein, um den gespeicherten Token zu erstellen oder zu aktualisieren. Das Passwort wird nicht im Konfigurationseintrag gespeichert.",
+        "description": "Gib das Kundenpasswort fuer {entry_title} ({host}) ein, um den gespeicherten Token zu erstellen oder zu aktualisieren. Das Passwort wird nicht im Konfigurationseintrag gespeichert.",
         "data": {
           "api_password": "Kundenpasswort"
         }
@@ -29,7 +29,7 @@
       },
       "reconfigure_password": {
         "title": "Kundenpasswort",
-        "description": "Gib das Kundenpasswort ein, um den gespeicherten Token zu erstellen oder zu aktualisieren.",
+        "description": "Gib das Kundenpasswort fuer {entry_title} ({host}) ein, um den gespeicherten Token zu erstellen oder zu aktualisieren. Das Passwort wird nicht im Konfigurationseintrag gespeichert.",
         "data": {
           "api_password": "Kundenpasswort"
         }
@@ -484,7 +484,7 @@
           },
           "password": {
             "title": "Kundenpasswort",
-            "description": "Gib das Kundenpasswort ein, um den gespeicherten Token zu erstellen oder zu aktualisieren.",
+            "description": "Gib das Kundenpasswort fuer {entry_title} ({host}) ein, um den gespeicherten Token zu erstellen oder zu aktualisieren. Das Passwort wird nicht im Konfigurationseintrag gespeichert.",
             "data": {
               "api_password": "Kundenpasswort"
             }
@@ -561,7 +561,7 @@
       },
       "password": {
         "title": "Kundenpasswort",
-        "description": "Gib das Kundenpasswort ein, um den gespeicherten Token zu erstellen oder zu aktualisieren.",
+        "description": "Gib das Kundenpasswort fuer {entry_title} ({host}) ein, um den gespeicherten Token zu erstellen oder zu aktualisieren. Das Passwort wird nicht im Konfigurationseintrag gespeichert.",
         "data": {
           "api_password": "Kundenpasswort"
         }

@@ -397,10 +397,18 @@ class TokenFlowMixin:
         step_id: str,
         errors: dict[str, str] | None = None,
     ):
+        state = self._pending_flow_state
+        placeholders = None
+        if state is not None:
+            placeholders = {
+                "entry_title": _entry_title(state.settings),
+                "host": str(state.settings.get(CONF_HOST, "")),
+            }
         return self.async_show_form(
             step_id=step_id,
             data_schema=_build_password_schema(),
             errors=errors or {},
+            description_placeholders=placeholders,
         )
 
     async def _async_handle_settings_step(
