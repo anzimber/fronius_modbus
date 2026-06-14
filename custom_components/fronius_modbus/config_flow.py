@@ -138,6 +138,10 @@ def _entry_title(data: dict[str, Any]) -> str:
     return f"{name} {host}" if host else name
 
 
+def _entry_unique_id(data: dict[str, Any]) -> str:
+    return str(data.get(CONF_HOST, "")).strip().lower()
+
+
 def entry_defaults(entry: config_entries.ConfigEntry) -> dict[str, Any]:
     defaults = {**entry.data, **entry.options}
     try:
@@ -521,6 +525,8 @@ class ConfigFlow(TokenFlowMixin, config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _async_finish_user(self, settings, info, previous_host):
         del previous_host
+        await self.async_set_unique_id(_entry_unique_id(settings))
+        self._abort_if_unique_id_configured()
         return self.async_create_entry(
             title=info["title"],
             data=_entry_payload(settings, reconfigure_required=False),
