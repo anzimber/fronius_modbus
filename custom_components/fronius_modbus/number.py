@@ -217,5 +217,5 @@ class FroniusModbusNumber(FroniusModbusBaseEntity, NumberEntity):
                 and data.get('api_battery_mode_effective_raw') == 1
             )
         if self._key == 'export_soft_limit':
-            return self._hub.web_api_configured
+            return self._hub.tech_configured
         return False
