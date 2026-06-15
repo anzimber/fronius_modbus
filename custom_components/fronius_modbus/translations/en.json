@@ -13,7 +13,7 @@
       },
       "user_password": {
         "title": "Customer Password",
-        "description": "Enter the customer password to create or refresh the stored token. The password is not stored in the config entry.",
+        "description": "Enter the customer password for {entry_title} ({host}) to create or refresh the stored token. The password is not stored in the config entry.",
         "data": {
           "api_password": "Customer password",
           "technician_password": "Technician password (optional)"
@@ -33,7 +33,7 @@
       },
       "reconfigure_password": {
         "title": "Customer Password",
-        "description": "Enter the customer password to create or refresh the stored token.",
+        "description": "Enter the customer password for {entry_title} ({host}) to create or refresh the stored token. The password is not stored in the config entry.",
         "data": {
           "api_password": "Customer password",
           "technician_password": "Technician password (optional)"
@@ -498,7 +498,7 @@
           },
           "password": {
             "title": "Customer Password",
-            "description": "Enter the customer password to create or refresh the stored token.",
+            "description": "Enter the customer password for {entry_title} ({host}) to create or refresh the stored token. The password is not stored in the config entry.",
             "data": {
               "api_password": "Customer password"
             }
@@ -575,7 +575,7 @@
       },
       "password": {
         "title": "Customer Password",
-        "description": "Enter the customer password to create or refresh the stored token.",
+        "description": "Enter the customer password for {entry_title} ({host}) to create or refresh the stored token. The password is not stored in the config entry.",
         "data": {
           "api_password": "Customer password",
           "technician_password": "Technician password (optional)"

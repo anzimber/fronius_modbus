@@ -62,6 +62,13 @@ def _clean_text(value: Any) -> str | None:
     return cleaned or None
 
 
+def _is_power_meter_model(model: str | None) -> bool:
+    if not model:
+        return False
+    model_l = model.lower()
+    return "meter" in model_l or "wattnode" in model_l or "42,0411" in model_l
+
+
 def _parse_json_object(value: Any) -> dict[str, Any]:
     try:
         parsed = json.loads(value) if isinstance(value, str) else None
@@ -165,7 +172,6 @@ def _parse_power_meter_info(
         if not isinstance(attributes, dict):
             continue
 
-        manufacturer = _clean_text(attributes.get("manufacturer"))
         model = _clean_text(attributes.get("model"))
         try:
             rtu_addr = int(str(attributes.get("addr", "")).strip())
@@ -174,7 +180,7 @@ def _parse_power_meter_info(
 
         if rtu_addr <= 0:
             continue
-        if manufacturer != "Fronius" or not model or not ("meter" in model.lower() or "wattnode" in model.lower() or "42,0411" in model.lower()):
+        if not _is_power_meter_model(model):
             continue
 
         label = (_clean_text(attributes.get("label")) or "").lower()

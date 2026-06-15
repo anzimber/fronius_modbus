@@ -48,7 +48,7 @@ _TRANSLATION_CACHE: dict[str, dict] = {}
 _TARGET_VERSION = 1
 _TARGET_MINOR_VERSION = 9
 
-_LEGACY_METER_DEVICE_RE = re.compile(r".*_meter\d+")
+_LEGACY_METER_DEVICE_RE = re.compile(r".*_meter_?\d+")
 _V019_MPPT_UNIQUE_ID_MAPPINGS = (
     ("fm_mppt1_power", "mppt_module_0_dc_power", "mppt_module_dc_power", {"module": "0"}),
     ("fm_mppt2_power", "mppt_module_1_dc_power", "mppt_module_dc_power", {"module": "1"}),
@@ -96,10 +96,22 @@ def _migration_issue_id(entry: ConfigEntry) -> str:
     return f"{MIGRATION_RECONFIGURE_ISSUE_ID_PREFIX}{entry.entry_id}"
 
 
-def _legacy_meter_device_needs_removal(device) -> bool:
+def _legacy_device_identifiers(entry: ConfigEntry) -> set[str]:
+    name = str(_entry_value(entry, CONF_NAME, "Fronius"))
+    return {
+        f"{name}_inverter",
+        f"{name}_battery_storage",
+    }
+
+
+def _legacy_device_needs_removal(entry: ConfigEntry, device) -> bool:
     identifiers = getattr(device, "identifiers", set())
     return any(
-        identifier_domain == DOMAIN and _LEGACY_METER_DEVICE_RE.fullmatch(identifier)
+        identifier_domain == DOMAIN
+        and (
+            identifier in _legacy_device_identifiers(entry)
+            or _LEGACY_METER_DEVICE_RE.fullmatch(identifier)
+        )
         for identifier_domain, identifier in identifiers
     )
 
@@ -465,7 +477,7 @@ async def async_remove_legacy_devices(
 
     removed_devices = 0
     for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
-        if _legacy_meter_device_needs_removal(device):
+        if _legacy_device_needs_removal(entry, device):
             device_registry.async_remove_device(device.id)
             removed_devices += 1
 

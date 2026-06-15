@@ -138,6 +138,10 @@ def _entry_title(data: dict[str, Any]) -> str:
     return f"{name} {host}" if host else name
 
 
+def _entry_unique_id(data: dict[str, Any]) -> str:
+    return str(data.get(CONF_HOST, "")).strip().lower()
+
+
 def entry_defaults(entry: config_entries.ConfigEntry) -> dict[str, Any]:
     defaults = {**entry.data, **entry.options}
     try:
@@ -260,7 +264,9 @@ async def _async_save_token(hass: HomeAssistant, host: str, token: dict[str, str
 
 async def _async_delete_token(hass: HomeAssistant, host: str | None) -> None:
     if host:
-        await async_get_token_store(hass).async_delete_token(host, API_USERNAME)
+        token_store = async_get_token_store(hass)
+        await token_store.async_delete_token(host, API_USERNAME)
+        await token_store.async_delete_token(host, TECHNICIAN_USERNAME)
 
 
 async def _async_mint_token(
@@ -391,10 +397,18 @@ class TokenFlowMixin:
         step_id: str,
         errors: dict[str, str] | None = None,
     ):
+        state = self._pending_flow_state
+        placeholders = None
+        if state is not None:
+            placeholders = {
+                "entry_title": _entry_title(state.settings),
+                "host": str(state.settings.get(CONF_HOST, "")),
+            }
         return self.async_show_form(
             step_id=step_id,
             data_schema=_build_password_schema(),
             errors=errors or {},
+            description_placeholders=placeholders,
         )
 
     async def _async_handle_settings_step(
@@ -521,6 +535,8 @@ class ConfigFlow(TokenFlowMixin, config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _async_finish_user(self, settings, info, previous_host):
         del previous_host
+        await self.async_set_unique_id(_entry_unique_id(settings))
+        self._abort_if_unique_id_configured()
         return self.async_create_entry(
             title=info["title"],
             data=_entry_payload(settings, reconfigure_required=False),

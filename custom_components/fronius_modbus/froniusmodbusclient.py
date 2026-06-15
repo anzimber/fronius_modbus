@@ -44,6 +44,13 @@ APPLY_TOGGLE_DELAY_SECONDS = 1.0
 APPLY_TOGGLE_MASK_SECONDS = APPLY_TOGGLE_DELAY_SECONDS + 0.5
 
 
+def _is_power_meter_model(model: str | None) -> bool:
+    if not model:
+        return False
+    model_l = model.lower()
+    return "meter" in model_l or "wattnode" in model_l or "42,0411" in model_l
+
+
 def _safe_read(label: str):
     def decorator(func):
         @wraps(func)
@@ -105,6 +112,7 @@ class FroniusModbusClient(ExtModbusClient):
         self._power_factor_enable_mask_until = 0.0
         self._load_inverter_sample_ts: float | None = None
         self._load_meter_sample_ts: dict[int, float] = {}
+        self._last_mppt_debug_summary: tuple[Any, ...] | None = None
         self.data = {}
         self.reset_storage_info()
 
@@ -572,9 +580,8 @@ class FroniusModbusClient(ExtModbusClient):
             if not result:
                 continue
 
-            manufacturer = str(self.data.get(prefix + "manufacturer") or "").strip()
             model = str(self.data.get(prefix + "model") or "").strip()
-            if manufacturer == "Fronius" and ("meter" in model.lower() or "wattnode" in model.lower() or "42,0411" in model.lower()):
+            if _is_power_meter_model(model):
                 discovered_meter_unit_ids.append(unit_id)
 
         self._meter_unit_ids = discovered_meter_unit_ids
@@ -594,7 +601,17 @@ class FroniusModbusClient(ExtModbusClient):
             # Re-evaluate MPPT channels after storage detection from nameplate data.
             await self.read_mppt_data()
 
-        _LOGGER.debug(f"Init done. data: {self.data}")
+        _LOGGER.debug(
+            "Initialized Fronius Modbus client for %s:%s: inverter_model=%s meter_unit_ids=%s storage_configured=%s storage_model_address=%s mppt_visible_modules=%s sunspec_model_count=%s",
+            self._host,
+            self._port,
+            self.data.get("i_model"),
+            self._meter_unit_ids,
+            self.storage_configured,
+            self.data.get("storage_model_address"),
+            self.data.get("mppt_visible_module_ids"),
+            self.data.get("sunspec_model_count"),
+        )
 
         return True
 
@@ -634,7 +651,7 @@ class FroniusModbusClient(ExtModbusClient):
                 ('AphC', 3, 1, dt.UINT16), ('A_SF', 4, 1, dt.INT16), ('PPVphAB', 5, 1, dt.UINT16),
                 ('PPVphBC', 6, 1, dt.UINT16), ('PPVphCA', 7, 1, dt.UINT16), ('PhVphA', 8, 1, dt.UINT16),
                 ('PhVphB', 9, 1, dt.UINT16), ('PhVphC', 10, 1, dt.UINT16), ('V_SF', 11, 1, dt.INT16),
-                ('W', 12, 1, dt.INT16), ('W_SF', 13, 1, dt.INT16), ('Hz', 14, 1, dt.INT16),
+                ('W', 12, 1, dt.INT16), ('W_SF', 13, 1, dt.INT16), ('Hz', 14, 1, dt.UINT16),
                 ('Hz_SF', 15, 1, dt.INT16), ('VAr', 18, 1, dt.INT16), ('VAr_SF', 19, 1, dt.INT16),
                 ('WH', 22, 2, dt.UINT32), ('WH_SF', 24, 1, dt.INT16), ('St', 36, 1, dt.UINT16),
                 ('StVnd', 37, 1, dt.UINT16), ('EvtVnd2', 44, 2, dt.UINT32),
@@ -704,12 +721,13 @@ class FroniusModbusClient(ExtModbusClient):
             (
                 ('PVConn', 0, 1, dt.UINT16), ('StorConn', 1, 1, dt.UINT16),
                 ('ECPConn', 2, 1, dt.UINT16), ('StActCtl', 33, 2, dt.UINT32),
-                ('Ris', 42, 1, dt.UINT16), ('Ris_SF', 43, 1, dt.UINT16),
+                ('Ris', 42, 1, dt.UINT16), ('Ris_SF', 43, 1, dt.INT16),
             ),
         )
 
         self._set_mapped('pv_connection', CONNECTION_STATUS_CONDENSED, raw['PVConn'], 'pv connection')
         self._set_mapped('storage_connection', CONNECTION_STATUS_CONDENSED, raw['StorConn'], 'storage connection')
+        self.storage_configured = raw['StorConn'] in {1, 3, 7}
         self._set_mapped('ecp_connection', ECP_CONNECTION_STATUS, raw['ECPConn'], 'electrical connection')
         self.data['inverter_controls'] = self.bitmask_to_string(raw['StActCtl'], INVERTER_CONTROLS, 'Normal')
         # Adjust the scaling factor because isolation resistance is provided
@@ -728,14 +746,15 @@ class FroniusModbusClient(ExtModbusClient):
         raw = self._decode_registers(
             regs,
             (
-                ('WMax', 0, 1, dt.UINT16), ('VRef', 1, 1, dt.UINT16), ('VRefOfs', 2, 1, dt.UINT16),
+                ('WMax', 0, 1, dt.UINT16), ('VRef', 1, 1, dt.UINT16), ('VRefOfs', 2, 1, dt.INT16),
                 ('WMax_SF', 20, 1, dt.INT16), ('VRef_SF', 21, 1, dt.INT16),
+                ('VRefOfs_SF', 22, 1, dt.INT16),
             ),
         )
 
         self._set_calculated('max_power', raw['WMax'], raw['WMax_SF'], 2, 0, 50000)
         self._set_calculated('vref', raw['VRef'], raw['VRef_SF'])
-        self._set_calculated('vrefofs', raw['VRefOfs'], raw['VRef_SF'])
+        self._set_calculated('vrefofs', raw['VRefOfs'], raw['VRefOfs_SF'])
 
         return True
 
@@ -751,7 +770,7 @@ class FroniusModbusClient(ExtModbusClient):
             (
                 ('Conn', 2, 1, dt.UINT16), ('WMaxLim_Ena', 7, 1, dt.UINT16),
                 ('OutPFSet', 8, 1, dt.INT16), ('OutPFSet_Ena', 12, 1, dt.UINT16),
-                ('VArPct_Ena', 20, 1, dt.INT16), ('WMaxLimPct_SF', 21, 1, dt.INT16),
+                ('VArPct_Ena', 20, 1, dt.UINT16), ('WMaxLimPct_SF', 21, 1, dt.INT16),
                 ('OutPFSet_SF', 22, 1, dt.INT16),
             ),
         )
@@ -784,25 +803,25 @@ class FroniusModbusClient(ExtModbusClient):
         '''
 
         if key not in self.data:
-            _LOGGER.info(f"Initializing {key}={value}")
+            _LOGGER.debug("Initializing total-increasing guard for %s=%s", key, value)
             return value
         elif self.data[key] is None:
             # None is a invalid value for monotonically increasing data.
             # hopefully never happens
-            _LOGGER.info(f"Found initial {key}=None. Now using new value {value}")
+            _LOGGER.debug("Replacing initial None value for %s with %s", key, value)
             return value
         elif value is None:
-            _LOGGER.warn(f"Received implausible {key}={value}. Using previous plausible value {self.data[key]}")
+            _LOGGER.warning("Received implausible %s=%s. Using previous plausible value %s", key, value, self.data[key])
             return self.data[key]
         elif value < self.data[key]:
-            _LOGGER.warn(f"Received implausible (too small) {key}={value} < previous plausible value {self.data[key]}")
+            _LOGGER.warning("Received implausible %s=%s below previous plausible value %s", key, value, self.data[key])
             return self.data[key]
         elif value > self.data[key] + 100000:
             # we allow steps of 100 kWh. Usually, at a typicall rate every 10 seconds the steps should be far below.
             # However, when data transfer is not working for minutes or even an hour it could become relevant.
             # Also, wrong values are often by orders of magnitude to large, which should still be avoided by this check.
 
-            _LOGGER.warn(f"Received implausible (too large) {key}={value} >> previous plausible value {self.data[key]}")
+            _LOGGER.warning("Received implausible %s=%s above previous plausible value %s", key, value, self.data[key])
             return self.data[key]
         else:
             return value
@@ -982,16 +1001,26 @@ class FroniusModbusClient(ExtModbusClient):
         self.data['mppt_visible_module_ids'] = pv_modules
         pv_values = [module_power.get(module_id) for module_id in pv_modules if self.is_numeric(module_power.get(module_id))]
         self.data['pv_power'] = round(sum(pv_values), 2) if pv_values else None
-        _LOGGER.debug(
-            "Parsed model 160 MPPT data: address=%s length=%s reported_count=%s visible_modules=%s storage_charge_module=%s storage_discharge_module=%s labels=%s",
+        mppt_debug_summary = (
             mppt_read_address,
             mppt_model_length,
             reported_module_count,
-            pv_modules,
+            tuple(pv_modules),
             storage_charge_module,
             storage_discharge_module,
-            module_labels,
         )
+        if mppt_debug_summary != self._last_mppt_debug_summary:
+            _LOGGER.debug(
+                "Parsed model 160 MPPT data: address=%s length=%s reported_count=%s visible_modules=%s storage_charge_module=%s storage_discharge_module=%s labels=%s",
+                mppt_read_address,
+                mppt_model_length,
+                reported_module_count,
+                pv_modules,
+                storage_charge_module,
+                storage_discharge_module,
+                module_labels,
+            )
+            self._last_mppt_debug_summary = mppt_debug_summary
 
         return True
 
@@ -1271,7 +1300,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_grid_charge_power(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode != 4:
-            return
+            raise ValueError("Grid charge power can only be changed in Charge from Grid mode")
         await self.set_discharge_rate_w(value * -1)
         percent = (value / self.max_charge_rate_w) * 100 if self.max_charge_rate_w else 0
         self.data['grid_charge_power'] = percent
@@ -1279,7 +1308,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_grid_discharge_power(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode != 5:
-            return
+            raise ValueError("Grid discharge power can only be changed in Discharge to Grid mode")
         await self.set_charge_rate_w(value * -1)
         percent = (value / self.max_discharge_rate_w) * 100 if self.max_discharge_rate_w else 0
         self.data['grid_discharge_power'] = percent
@@ -1287,7 +1316,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_charge_limit(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode not in [1, 3, 6]:
-            return
+            raise ValueError("Charge limit cannot be changed in the current storage mode")
         await self.set_charge_rate_w(value)
         percent = (value / self.max_charge_rate_w) * 100 if self.max_charge_rate_w else 0
         self.data['charge_limit'] = percent
@@ -1295,7 +1324,7 @@ class FroniusModbusClient(ExtModbusClient):
     async def set_discharge_limit(self, value):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode not in [2, 3, 7]:
-            return
+            raise ValueError("Discharge limit cannot be changed in the current storage mode")
         await self.set_discharge_rate_w(value)
         percent = (value / self.max_discharge_rate_w) * 100 if self.max_discharge_rate_w else 0
         self.data['discharge_limit'] = percent

@@ -34,6 +34,26 @@ _SOLAR_API_MINIMUM_VERSION = (1, 40, 7, 1)
 _SOLAR_API_MINIMUM_VERSION_TEXT = "1.40.7-1"
 _SOLAR_API_FIRMWARE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$")
 
+
+def _export_limit_summary(config: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(config, dict) or not config:
+        return {"available": False}
+
+    export_limits = config.get("exportLimits", {})
+    active_power = export_limits.get("activePower", {}) if isinstance(export_limits, dict) else {}
+    soft_limit = active_power.get("softLimit", {}) if isinstance(active_power, dict) else {}
+    hard_limit = active_power.get("hardLimit", {}) if isinstance(active_power, dict) else {}
+
+    return {
+        "available": True,
+        "active_power_activated": active_power.get("activated") if isinstance(active_power, dict) else None,
+        "soft_limit_enabled": soft_limit.get("enabled") if isinstance(soft_limit, dict) else None,
+        "soft_limit_w": soft_limit.get("powerLimit") if isinstance(soft_limit, dict) else None,
+        "hard_limit_enabled": hard_limit.get("enabled") if isinstance(hard_limit, dict) else None,
+        "hard_limit_w": hard_limit.get("powerLimit") if isinstance(hard_limit, dict) else None,
+        "fail_safe_enabled": export_limits.get("failSafeModeEnabled") if isinstance(export_limits, dict) else None,
+    }
+
 WEB_API_DATA_KEYS = (
     "inverter_temperature",
     "api_modbus_mode",
@@ -56,6 +76,69 @@ WEB_API_DATA_KEYS = (
     "api_charge_from_ac",
     "api_charge_from_grid",
     "export_soft_limit",
+)
+
+INVERTER_STATUS_DATA_KEYS = (
+    "pv_connection",
+    "storage_connection",
+    "ecp_connection",
+    "inverter_controls",
+    "isolation_resistance",
+)
+INVERTER_SETTINGS_DATA_KEYS = (
+    "max_power",
+    "vref",
+    "vrefofs",
+)
+INVERTER_CONTROL_DATA_KEYS = (
+    "Conn",
+    "WMaxLim_Ena",
+    "OutPFSet_Ena",
+    "power_factor_enable",
+    "VArPct_Ena",
+    "ac_limit_rate_sf",
+    "power_factor_sf",
+    "power_factor",
+)
+AC_LIMIT_DATA_KEYS = (
+    "ac_limit_rate_raw",
+    "ac_limit_rate_pct",
+    "ac_limit_rate",
+    "ac_limit_enable",
+)
+METER_DATA_KEY_SUFFIXES = (
+    "A",
+    "AphA",
+    "AphB",
+    "AphC",
+    "PhVphA",
+    "PhVphB",
+    "PhVphC",
+    "PPV",
+    "WphA",
+    "WphB",
+    "WphC",
+    "exported",
+    "imported",
+    "line_frequency",
+    "power",
+)
+STORAGE_DATA_KEYS = (
+    "grid_charging",
+    "charge_status",
+    "soc_minimum",
+    "discharging_power",
+    "charging_power",
+    "soc",
+    "max_charge",
+    "WChaGra",
+    "WDisChaGra",
+    "discharge_limit",
+    "grid_charge_power",
+    "charge_limit",
+    "grid_discharge_power",
+    "control_mode",
+    "ext_control_mode",
 )
 
 BATTERY_WRITE_MODBUS_RECOVERY_SECONDS = 30.0
@@ -186,6 +269,7 @@ class Hub:
         self._battery_write_transition_until = 0.0
         self._battery_write_transition_warned = False
         self._delayed_web_refresh_task: asyncio.Task | None = None
+        self._last_export_limit_summary: dict[str, Any] | None = None
         self._last_good_load_w: float | None = None
         self._last_good_inverter_power_w: float | None = None
         self._consecutive_bad_load_polls = 0
@@ -322,16 +406,6 @@ class Hub:
         """Initialize data and coordinator."""
         self._config_entry = config_entry
         await self._hass.async_add_executor_job(self.check_pymodbus_version)
-        if apply_modbus_config and self.web_api_configured and self._auto_enable_modbus:
-            enabled = await self._async_web_job(
-                self._webclient.ensure_modbus_enabled,
-                self._port,
-                self._client.primary_meter_unit_id,
-                self._inverter_unit_id,
-                self._restrict_modbus_to_this_ip,
-            )
-            if enabled:
-                await asyncio.sleep(1.0)
         meter_phase_counts: dict[int, int] = {}
         meter_locations: dict[int, int] = {}
         if self.web_api_configured:
@@ -344,7 +418,7 @@ class Hub:
                     "Keeping existing smart meter unit ids for %s because PowerMeter payload parsing failed",
                     self._host,
                 )
-            elif isinstance(meter_info, dict):
+            elif isinstance(meter_info, dict) and meter_info.get("unit_ids"):
                 self._client.set_meter_unit_ids(
                     meter_info.get("unit_ids"),
                     primary_unit_id=meter_info.get("primary_unit_id"),
@@ -375,6 +449,21 @@ class Hub:
                         if unit_id <= 0 or location < 0:
                             continue
                         meter_locations[unit_id] = location
+            else:
+                _LOGGER.debug(
+                    "Keeping existing smart meter unit ids for %s because PowerMeter payload contained no usable meters",
+                    self._host,
+                )
+        if apply_modbus_config and self.web_api_configured and self._auto_enable_modbus:
+            enabled = await self._async_web_job(
+                self._webclient.ensure_modbus_enabled,
+                self._port,
+                self._client.primary_meter_unit_id,
+                self._inverter_unit_id,
+                self._restrict_modbus_to_this_ip,
+            )
+            if enabled:
+                await asyncio.sleep(1.0)
         await self._client.init_data()
         for unit_id in self._client._meter_unit_ids:
             phase_count = meter_phase_counts.get(unit_id)
@@ -423,9 +512,21 @@ class Hub:
 
     async def _async_refresh_optional_data(self) -> None:
         self.data["load"] = None
-        await self._async_optional_poll("inverter status", self._client.read_inverter_status_data)
-        await self._async_optional_poll("inverter settings", self._client.read_inverter_model_settings_data)
-        await self._async_optional_poll("inverter controls", self._client.read_inverter_controls_data)
+        await self._async_optional_poll(
+            "inverter status",
+            self._client.read_inverter_status_data,
+            stale_keys=INVERTER_STATUS_DATA_KEYS,
+        )
+        await self._async_optional_poll(
+            "inverter settings",
+            self._client.read_inverter_model_settings_data,
+            stale_keys=INVERTER_SETTINGS_DATA_KEYS,
+        )
+        await self._async_optional_poll(
+            "inverter controls",
+            self._client.read_inverter_controls_data,
+            stale_keys=INVERTER_CONTROL_DATA_KEYS,
+        )
 
         if self._client.meter_configured:
             if self._client.primary_meter_unit_id not in self._client._meter_unit_ids:
@@ -438,15 +539,28 @@ class Hub:
                     self._client.read_meter_data,
                     unit_id=meter_address,
                     is_primary=meter_address == self._client.primary_meter_unit_id,
+                    stale_keys=self._meter_data_keys(meter_address),
                 )
 
         if self._client.mppt_configured:
-            await self._async_optional_poll("mppt", self._client.read_mppt_data)
+            await self._async_optional_poll(
+                "mppt",
+                self._client.read_mppt_data,
+                stale_keys=self._mppt_data_keys(),
+            )
 
-        await self._async_optional_poll("ac limit", self._client.read_ac_limit_data)
+        await self._async_optional_poll(
+            "ac limit",
+            self._client.read_ac_limit_data,
+            stale_keys=AC_LIMIT_DATA_KEYS,
+        )
 
         if self._client.storage_configured:
-            await self._async_optional_poll("storage", self._client.read_inverter_storage_data)
+            await self._async_optional_poll(
+                "storage",
+                self._client.read_inverter_storage_data,
+                stale_keys=STORAGE_DATA_KEYS,
+            )
 
         self._apply_modbus_load_data()
 
@@ -456,17 +570,63 @@ class Hub:
             except Exception as err:
                 _LOGGER.warning("Fronius web API refresh failed: %s", err)
 
-    async def _async_optional_poll(self, label: str, func, *args, **kwargs) -> bool:
+    async def _async_optional_poll(self, label: str, func, *args, stale_keys=(), **kwargs) -> bool:
         try:
             result = await func(*args, **kwargs)
         except Exception as err:
             _LOGGER.warning("Optional Fronius %s refresh failed: %s", label, err)
+            self._clear_data_keys(stale_keys)
             return False
 
         if result is False:
             _LOGGER.debug("Optional Fronius %s refresh returned no data", label)
+            self._clear_data_keys(stale_keys)
             return False
         return True
+
+    def _clear_data_keys(self, keys) -> None:
+        for key in keys:
+            self.data[key] = None
+
+    def _meter_data_keys(self, unit_id: int) -> tuple[str, ...]:
+        prefix = self._meter_prefix(unit_id)
+        keys = [f"{prefix}{suffix}" for suffix in METER_DATA_KEY_SUFFIXES]
+        if int(unit_id) == self._client.primary_meter_unit_id:
+            keys.append("grid_status")
+        return tuple(keys)
+
+    def _mppt_data_keys(self) -> tuple[str, ...]:
+        keys = [
+            "pv_power",
+            "mppt_visible_module_ids",
+            "storage_charge_module",
+            "storage_charge_current",
+            "storage_charge_voltage",
+            "storage_charge_power",
+            "storage_charge_lfte",
+            "storage_discharge_module",
+            "storage_discharge_current",
+            "storage_discharge_voltage",
+            "storage_discharge_power",
+            "storage_discharge_lfte",
+        ]
+        for module_id in range(1, int(self._client.mppt_module_count) + 1):
+            module_idx = module_id - 1
+            keys.extend(
+                (
+                    f"module{module_id}_label",
+                    f"module{module_id}_power",
+                    f"module{module_id}_lfte",
+                    f"module{module_id}_tms",
+                    f"mppt_module_{module_idx}_label",
+                    f"mppt_module_{module_idx}_dc_current",
+                    f"mppt_module_{module_idx}_dc_voltage",
+                    f"mppt_module_{module_idx}_dc_power",
+                    f"mppt_module_{module_idx}_lifetime_energy",
+                    f"mppt_module_{module_idx}_timestamp",
+                )
+            )
+        return tuple(keys)
 
     def _clear_web_api_data(self) -> None:
         for key in WEB_API_DATA_KEYS:
@@ -737,7 +897,11 @@ class Hub:
             export_limit_config = await self._async_web_job(self._webclient.get_export_limit_config)
         else:
             export_limit_config = None
-        _LOGGER.debug("Export limit config from web API: %s", export_limit_config)
+        export_limit_summary = _export_limit_summary(export_limit_config)
+        if export_limit_summary != self._last_export_limit_summary:
+            _LOGGER.debug("Export limit config from web API: %s", export_limit_summary)
+            self._last_export_limit_summary = export_limit_summary
+        self.data["export_soft_limit"] = None
         if isinstance(export_limit_config, dict) and export_limit_config:
             soft = (
                 export_limit_config.get("exportLimits", {})
@@ -747,8 +911,6 @@ class Hub:
             if isinstance(soft, dict):
                 if soft.get("enabled"):
                     self.data["export_soft_limit"] = soft.get("powerLimit")
-                else:
-                    self.data["export_soft_limit"] = None
 
         await self._async_sync_solar_api_warning()
 
