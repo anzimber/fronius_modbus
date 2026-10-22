@@ -29,6 +29,7 @@ DEFAULT_AUTO_ENABLE_MODBUS = True
 DEFAULT_RESTRICT_MODBUS_TO_THIS_IP = False
 API_USERNAME = "customer"
 TECHNICIAN_USERNAME = "technician"
+API_USERNAMES = (API_USERNAME, TECHNICIAN_USERNAME)
 CONF_RECONFIGURE_REQUIRED = "_reconfigure_required"
 MIGRATION_RECONFIGURE_ISSUE_ID_PREFIX = "legacy_modbus_only_reconfigure_"
 SOLAR_API_LOW_FIRMWARE_ISSUE_ID_PREFIX = "solar_api_low_firmware_"
@@ -88,6 +89,7 @@ STORAGE_MODBUS_NUMBER_TYPES = [
 STORAGE_API_NUMBER_TYPES = [
     ['api_battery_power', 'api_battery_power', {'min': -20000, 'max': 20000, 'step': 10, 'mode': 'box', 'unit': 'W'}],
     ['soc_maximum', 'soc_maximum', {'min': 0, 'max': 100, 'step': 1, 'mode': 'box', 'unit': '%'}],
+    ['backup_reserve', 'backup_reserve', {'min': 5, 'max': 100, 'step': 1, 'mode': 'box', 'unit': '%'}],
 ]
 
 INVERTER_NUMBER_TYPES = [
@@ -147,6 +149,9 @@ INVERTER_SENSOR_TYPES = {
 
 INVERTER_WEB_SENSOR_TYPES = {
     'inverter_temperature': ['inverter_temperature', 'inverter_temperature', SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, '°C', 'mdi:thermometer', None],
+    'ac_mod_temperature': ['ac_mod_temperature', 'ac_mod_temperature', SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, '°C', 'mdi:thermometer', None],
+    'dc_mod_temperature': ['dc_mod_temperature', 'dc_mod_temperature', SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, '°C', 'mdi:thermometer', None],
+    'batt_mod_temperature': ['batt_mod_temperature', 'batt_mod_temperature', SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, '°C', 'mdi:thermometer', None],
     'export_soft_limit': ['export_soft_limit', 'export_soft_limit', SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, 'W', 'mdi:transmission-tower-export', None],
     'api_modbus_mode': ['api_modbus_mode', 'api_modbus_mode', None, None, None, None, EntityCategory.DIAGNOSTIC],
     'api_modbus_control': ['api_modbus_control', 'api_modbus_control', None, None, None, None, EntityCategory.DIAGNOSTIC],

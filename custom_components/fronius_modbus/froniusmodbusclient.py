@@ -94,6 +94,21 @@ class FroniusModbusClient(ExtModbusClient):
         self.mppt_configured = False
         self.storage_configured = False
         self.storage_extended_control_mode = 0
+        # Mode-write bookkeeping for the extended-mode re-derivation in
+        # read_inverter_storage_data: a storage read can overlap a mode write
+        # (the coordinator poll does not take the hub's write lock), and a
+        # register value read before the write must not be taken as a mode
+        # change made outside HA.
+        self._mode_writes_in_progress = 0
+        self._mode_write_seq = 0
+        # Base control mode register as last written by change_settings() or
+        # seen by a storage read; None until the first read.
+        self._last_base_mode = None
+        # True while the extended mode is one HA chose, False while it was
+        # derived from the registers (startup, or a change made outside HA).
+        # The limit/power setters claim it before they write, so a read that
+        # lands between the write and the bookkeeping cannot re-derive.
+        self._ext_mode_set_by_ha = False
         self.max_charge_rate_w = 11000
         self.max_discharge_rate_w = 11000
         self._storage_address = STORAGE_ADDRESS
@@ -116,6 +131,8 @@ class FroniusModbusClient(ExtModbusClient):
         self._load_meter_sample_ts: dict[int, float] = {}
         self._last_mppt_debug_summary: tuple[Any, ...] | None = None
         self.data = {}
+        # Keys whose last total-increasing reading was rejected: warned once, then quiet.
+        self._lfte_rejected: set[str] = set()
         self.reset_storage_info()
 
     def reset_storage_info(self) -> None:
@@ -820,35 +837,45 @@ class FroniusModbusClient(ExtModbusClient):
     def protect_lfte(self, key, value):
         ''' ensure lfte values are monotonically increasing to fullfil the properties of SensorStateClass.TOTAL_INCREASING.
             Therfore this function returns the previous, last known good value, in case the modbus read was erroneus:
-            * the current value from modbus is None
+            * the current value from modbus is None or 0 (SunSpec: an accumulator of 0 is "not accumulated")
             * the current value from modbus is smaller than the previous value
             * the current value from modbus is much larger then the previous value
-            This avoids wrong spikes in consumption / production on the energy dashboard
+            This avoids wrong spikes in consumption / production on the energy dashboard.
+            A rejected reading is logged once; the inverter serves the same bad value on every
+            poll after a firmware update (#125), and a warning per poll buries the log.
         '''
 
-        if key not in self.data:
+        previous = self.data.get(key)
+        if value is None or value == 0:
+            # No reading, not a reset: SunSpec accumulators report 0 while the
+            # device has nothing accumulated yet, e.g. right after a firmware
+            # update. Checked before the first-value branches: a start during
+            # that phase must not adopt 0 as the baseline, or the real counter
+            # would then exceed the step limit and be rejected for good.
+            _LOGGER.debug("No accumulated value for %s yet, keeping %s", key, previous)
+            return previous
+        elif previous is None:
             _LOGGER.debug("Initializing total-increasing guard for %s=%s", key, value)
             return value
-        elif self.data[key] is None:
-            # None is a invalid value for monotonically increasing data.
-            # hopefully never happens
-            _LOGGER.debug("Replacing initial None value for %s with %s", key, value)
-            return value
-        elif value is None:
-            _LOGGER.warning("Received implausible %s=%s. Using previous plausible value %s", key, value, self.data[key])
-            return self.data[key]
         elif value < self.data[key]:
-            _LOGGER.warning("Received implausible %s=%s below previous plausible value %s", key, value, self.data[key])
+            self._reject_lfte(key, value, "below")
             return self.data[key]
         elif value > self.data[key] + 100000:
             # we allow steps of 100 kWh. Usually, at a typicall rate every 10 seconds the steps should be far below.
             # However, when data transfer is not working for minutes or even an hour it could become relevant.
             # Also, wrong values are often by orders of magnitude to large, which should still be avoided by this check.
-
-            _LOGGER.warning("Received implausible %s=%s above previous plausible value %s", key, value, self.data[key])
+            self._reject_lfte(key, value, "above")
             return self.data[key]
         else:
+            if key in self._lfte_rejected:
+                self._lfte_rejected.discard(key)
+                _LOGGER.info("%s reads plausibly again: %s", key, value)
             return value
+
+    def _reject_lfte(self, key, value, direction: str) -> None:
+        log = _LOGGER.debug if key in self._lfte_rejected else _LOGGER.warning
+        self._lfte_rejected.add(key)
+        log("Received implausible %s=%s %s previous plausible value %s", key, value, direction, self.data[key])
 
     @_safe_read("mppt")
     async def read_mppt_data(self):
@@ -1048,9 +1075,27 @@ class FroniusModbusClient(ExtModbusClient):
 
         return True
 
+    def _rates_fit_extended_mode(self, in_rate, out_rate) -> bool:
+        """Whether HA writes in the current extended mode can have produced these rates.
+
+        Signs only: the limit and power numbers move one rate within its sign,
+        the other rate stays as the mode wrote it.
+        """
+        mode = self.storage_extended_control_mode
+        if mode == 4:
+            return in_rate >= 0 and out_rate <= 0
+        if mode == 5:
+            return in_rate <= 0 and out_rate >= 0
+        if mode == 6:
+            return in_rate >= 0 and out_rate == 0
+        if mode == 7:
+            return in_rate == 0 and out_rate >= 0
+        return in_rate >= 0 and out_rate >= 0
+
     @_safe_read("storage")
     async def read_inverter_storage_data(self):
         """start reading storage data"""
+        mode_write_seq = self._mode_write_seq
         regs = await self.get_registers(unit_id=self._inverter_unit_id, address=self._storage_address, count=24)
         if regs is None:
             return False
@@ -1119,13 +1164,46 @@ class FroniusModbusClient(ExtModbusClient):
 
             self.data['control_mode'] = normalized_control_mode
 
-        # set extended storage control mode at startup
+        # Extended storage control mode. Who set the mode decides how it is
+        # maintained:
+        # - HA set it (change_settings, or a limit/power number written in the
+        #   current mode): keep it while the base control mode register stays
+        #   as written. The registers alone cannot tell it apart - Discharge
+        #   to Grid at 0 W is base 1 with InWRte 0, the same as Block Charging
+        #   - and a charge limit reaching 0 in mode 1 must not flip the select.
+        # - Somebody else set it (Solar.web, evcc, the inverter itself, or the
+        #   state found at startup): there is no HA choice to protect, so the
+        #   mode follows the registers on every read. evcc "hold" and "charge"
+        #   share base 2 and differ only in OutWRte.
+        # The base register differing from the value HA last wrote or the
+        # previous read saw means somebody else took over. So do rates that
+        # no HA write in the chosen mode can produce (see
+        # _rates_fit_extended_mode), which also covers a rate the inverter
+        # silently did not take. Comparing the base mode against
+        # that value, not against the base modes an extended mode allows,
+        # matters because those overlap: Discharge to Grid and Block Charging
+        # both live on base 1 and 3. Without this the stale extended mode
+        # sticks until a config-entry reload, and with it the select state and
+        # the availability of the mode-gated number entities. Skipped while a
+        # mode write is running or finished during this read, because the
+        # registers may predate that write.
         ext_control_mode = self.data.get('ext_control_mode')
+        if self._mode_writes_in_progress == 0 and self._mode_write_seq == mode_write_seq:
+            if self._last_base_mode is not None and raw['storage_control_mode'] != self._last_base_mode:
+                self._ext_mode_set_by_ha = False
+            self._last_base_mode = raw['storage_control_mode']
+            if not self._rates_fit_extended_mode(raw['charge_power'], raw['discharge_power']):
+                self._ext_mode_set_by_ha = False
+            if not self._ext_mode_set_by_ha:
+                ext_control_mode = None
         if ext_control_mode is None:
             if raw['storage_control_mode'] == 0:
                 ext_control_mode = 0
             elif raw['storage_control_mode'] in [1, 3] and raw['charge_power'] == 0:
                 ext_control_mode = 7
+            elif raw['storage_control_mode'] == 1 and raw['charge_power'] < 0:
+                # what set_grid_discharge_mode() plus a target power writes
+                ext_control_mode = 5
             elif raw['storage_control_mode'] == 1:
                 ext_control_mode = 1
             elif raw['storage_control_mode'] in [2, 3] and raw['discharge_power'] < 0:
@@ -1139,6 +1217,13 @@ class FroniusModbusClient(ExtModbusClient):
             elif raw['storage_control_mode'] == 3:
                 ext_control_mode = 3
             if not ext_control_mode is None:
+                if self.data.get('ext_control_mode') is not None and ext_control_mode != self.storage_extended_control_mode:
+                    _LOGGER.info(
+                        "Storage mode changed outside HA (base mode %s), extended mode %s -> %s",
+                        raw['storage_control_mode'],
+                        self.storage_extended_control_mode,
+                        ext_control_mode,
+                    )
                 self.data['ext_control_mode'] = self._map_value(STORAGE_EXT_CONTROL_MODE, ext_control_mode, 'extended storage mode')
                 self.storage_extended_control_mode = ext_control_mode
 
@@ -1327,6 +1412,7 @@ class FroniusModbusClient(ExtModbusClient):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode != 4:
             raise ValueError("Grid charge power can only be changed in Charge from Grid mode")
+        self._ext_mode_set_by_ha = True
         await self.set_discharge_rate_w(value * -1)
         percent = (value / self.max_charge_rate_w) * 100 if self.max_charge_rate_w else 0
         self.data['grid_charge_power'] = percent
@@ -1335,6 +1421,7 @@ class FroniusModbusClient(ExtModbusClient):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode != 5:
             raise ValueError("Grid discharge power can only be changed in Discharge to Grid mode")
+        self._ext_mode_set_by_ha = True
         await self.set_charge_rate_w(value * -1)
         percent = (value / self.max_discharge_rate_w) * 100 if self.max_discharge_rate_w else 0
         self.data['grid_discharge_power'] = percent
@@ -1343,6 +1430,7 @@ class FroniusModbusClient(ExtModbusClient):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode not in [1, 3, 6]:
             raise ValueError("Charge limit cannot be changed in the current storage mode")
+        self._ext_mode_set_by_ha = True
         await self.set_charge_rate_w(value)
         percent = (value / self.max_charge_rate_w) * 100 if self.max_charge_rate_w else 0
         self.data['charge_limit'] = percent
@@ -1351,6 +1439,7 @@ class FroniusModbusClient(ExtModbusClient):
         """value is in W from HA, store percent internally."""
         if self.storage_extended_control_mode not in [2, 3, 7]:
             raise ValueError("Discharge limit cannot be changed in the current storage mode")
+        self._ext_mode_set_by_ha = True
         await self.set_discharge_rate_w(value)
         percent = (value / self.max_discharge_rate_w) * 100 if self.max_discharge_rate_w else 0
         self.data['discharge_limit'] = percent
@@ -1372,14 +1461,23 @@ class FroniusModbusClient(ExtModbusClient):
         extended_mode: Optional[int] = None,
     ):
         effective_mode = self.storage_extended_control_mode if extended_mode is None else extended_mode
-        await self.set_storage_control_mode(mode)
-        await self.set_charge_rate(charge_limit)
-        await self.set_discharge_rate(discharge_limit)
-        self.data['charge_limit'] = 0 if effective_mode == 5 else charge_limit
-        self.data['discharge_limit'] = 0 if effective_mode == 4 else discharge_limit
-        self.data['grid_charge_power'] = grid_charge_power
-        self.data['grid_discharge_power'] = grid_discharge_power
-        self.storage_extended_control_mode = effective_mode
+        self._mode_writes_in_progress += 1
+        try:
+            await self.set_storage_control_mode(mode)
+            await self.set_charge_rate(charge_limit)
+            await self.set_discharge_rate(discharge_limit)
+            self.data['charge_limit'] = 0 if effective_mode == 5 else charge_limit
+            self.data['discharge_limit'] = 0 if effective_mode == 4 else discharge_limit
+            self.data['grid_charge_power'] = grid_charge_power
+            self.data['grid_discharge_power'] = grid_discharge_power
+            self.storage_extended_control_mode = effective_mode
+            # Only after a complete write: a partly failed one leaves the old
+            # values, so the next read sees the change and re-derives.
+            self._last_base_mode = mode
+            self._ext_mode_set_by_ha = True
+        finally:
+            self._mode_writes_in_progress -= 1
+            self._mode_write_seq += 1
         if not minimum_reserve is None:
             await self.set_minimum_reserve(minimum_reserve)
         

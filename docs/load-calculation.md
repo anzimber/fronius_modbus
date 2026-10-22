@@ -21,16 +21,18 @@ Verto; direct hardware observations are limited to one Symo GEN24 installation.
 
 ## Repository baseline and previous fixes
 
-The PR targets `anzimber/fronius_modbus:main` at
-`3b543de438a3057cd71b2d717fbdbaba3d9ecee3` (0.3.1). The existing
-`fixes/combined_multiple_fixes` branch at
-`e872a60ed532db89758a311642dfda1ba1156736` is an ancestor of `main`.
-Upstream `callifo/fronius_modbus:main` was
-`81a631bffc99c913af68b68a488ea94951551454` (0.3.3), 21 commits ahead
-and zero behind the fork. It retained the same load polling, clamp, cache and
-charging exception. Previous fixes `7f84d10`, `f58ab25` and `5c5a623` were
-reviewed. The installed component included newer upstream work and a separate
-experimental diagnostic patch. This PR does not bundle an upstream merge.
+The PR targets the synchronized `anzimber/fronius_modbus:main` at
+`81a631bffc99c913af68b68a488ea94951551454` (0.3.3), identical to
+`callifo/fronius_modbus:main` when rechecked. The original PR base was
+`3b543de` (0.3.1); after the fork was synced, the updated main was merged
+into the fix branch without conflicts and all tests were rerun. The PR diff
+relative to the new main contains only this load fix, its tests and documentation.
+Newer upstream battery-control and mode-resynchronization changes are retained.
+
+The existing `fixes/combined_multiple_fixes` branch is an ancestor of the
+original main. Previous load fixes `7f84d10`, `f58ab25` and `5c5a623` were
+reviewed. The installed component includes upstream work and a separate
+experimental diagnostic patch; the running installation is not changed here.
 
 ## Physical meaning: net demand versus household consumption
 
@@ -212,10 +214,11 @@ and simulated Predbat writes. The actual hub, coordinator and decoder are loaded
 with lightweight HA boundaries and real pymodbus data types. This is not a full
 HA config-entry/lifecycle test or hardware certification of every inverter model.
 
-**83 tests passed on the fork base and 83 passed with the corrected production
-diff applied to upstream 0.3.3 (`81a631b`).** Three-way application is needed because upstream
-changed constructor context; newer control fixes are retained. Syntax compilation
-and `git diff --check` are also run. No production deployment has been made.
+**83 tests passed on the original fork base and on the upstream compatibility
+checkout, and all 83 passed again after merging the synchronized fork main
+(`81a631b`) into the fix branch.** All 53 audited write/control/recovery methods
+remain identical to that new base. Syntax compilation and `git diff --check`
+also passed. No production deployment has been made.
 
 The initial 79-case suite passed locally and in GitHub Actions before the signed
 balance correction; four explicit additional-generator scenarios extend it.
@@ -228,10 +231,10 @@ Those failures are documented rather than suppressed; they are outside this fix.
 ## Installation, verification and rollback
 
 1. Back up the complete installed component and record its version/commit.
-2. Review the diff. The PR base is 0.3.1: do not replace a newer installation
-   wholesale with this older branch. Apply/cherry-pick the production diff onto
-   the exact target version, use three-way merging where required, and retest.
-   Retain newer upstream battery-control fixes.
+2. Review the diff against the synchronized 0.3.3 base. This branch now includes
+   that upstream release and its battery-control fixes. If the target installation
+   has further local changes or a later version, apply/cherry-pick only the
+   production diff onto that exact target version and retest; preserve its fixes.
 3. Run `ha core check` on the actual target, then restart/reload to activate the
    Python changes. Entity IDs and config entries do not require migration.
 4. Verify PV/grid/AC data and normal scheduling through naturally occurring

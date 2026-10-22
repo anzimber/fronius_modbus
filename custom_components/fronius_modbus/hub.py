@@ -7,6 +7,7 @@ import math
 import re
 import time
 from datetime import timedelta
+from functools import wraps
 from typing import Any
 from importlib.metadata import version
 from homeassistant.config_entries import ConfigEntry
@@ -24,6 +25,7 @@ from .const import (
     DOMAIN,
     ENTITY_PREFIX,
     API_USERNAME,
+    TECHNICIAN_USERNAME,
     SOLAR_API_LOW_FIRMWARE_ISSUE_ID_PREFIX,
     MIGRATION_RECONFIGURE_ISSUE_ID_PREFIX,
 )
@@ -34,6 +36,31 @@ _SOLAR_API_WARNING_TRANSLATION_KEY = "solar_api_low_firmware"
 _SOLAR_API_MINIMUM_VERSION = (1, 40, 7, 1)
 _SOLAR_API_MINIMUM_VERSION_TEXT = "1.40.7-1"
 _SOLAR_API_FIRMWARE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$")
+
+
+def _serialized_write(func):
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        async with self._write_lock:
+            return await func(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _last_write_wins(func):
+    """Serialize like _serialized_write, but a burst of calls reaches the device as its
+    first and its last value: a caller that finds a newer call queued behind it returns
+    without writing. Every write to /api/config/batteries costs the inverter seconds of
+    Modbus, so five quick steps of one control must not become five writes."""
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        ticket = self._write_tickets[func.__name__] = self._write_tickets.get(func.__name__, 0) + 1
+        async with self._write_lock:
+            if self._write_tickets[func.__name__] != ticket:
+                return None
+            return await func(self, *args, **kwargs)
+
+    return wrapper
 
 
 def _export_limit_summary(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -57,6 +84,9 @@ def _export_limit_summary(config: dict[str, Any] | None) -> dict[str, Any]:
 
 WEB_API_DATA_KEYS = (
     "inverter_temperature",
+    "ac_mod_temperature",
+    "dc_mod_temperature",
+    "batt_mod_temperature",
     "api_modbus_mode",
     "api_modbus_control",
     "api_modbus_sunspec_mode",
@@ -73,7 +103,7 @@ WEB_API_DATA_KEYS = (
     "api_soc_mode",
     "api_soc_min",
     "soc_maximum",
-    "api_backup_reserved",
+    "backup_reserve",
     "api_charge_from_ac",
     "api_charge_from_grid",
     "export_soft_limit",
@@ -223,7 +253,6 @@ class Hub:
         api_username: str | None = None,
         api_password: str | None = None,
         api_token: dict[str, str] | None = None,
-        tech_token: dict[str, str] | None = None,
         auto_enable_modbus: bool = True,
         restrict_modbus_to_this_ip: bool = False,
     ) -> None:
@@ -238,8 +267,8 @@ class Hub:
         self._config_entry: ConfigEntry | None = None
         self._auto_enable_modbus = auto_enable_modbus
         self._restrict_modbus_to_this_ip = restrict_modbus_to_this_ip
+        self._api_username = api_username
         self._webclient: FroniusWebClient | None = None
-        self._tech_webclient: FroniusWebClient | None = None
 
         self._id = f'{name.lower()}_{host.lower().replace('.','')}'
         self.online = True
@@ -252,38 +281,15 @@ class Hub:
                 password=api_password or "",
                 token=api_token,
             )
-        if tech_token:
-            from .const import TECHNICIAN_USERNAME
-            self._tech_webclient = FroniusWebClient(
-                host=host,
-                username=TECHNICIAN_USERNAME,
-                token=tech_token,
-            )
         self._scan_interval = timedelta(seconds=scan_interval)
         self.coordinator = None
-        self._busy = False
+        self._write_lock = asyncio.Lock()
+        self._write_tickets: dict[str, int] = {}
         self._battery_write_transition_until = 0.0
         self._battery_write_transition_warned = False
         self._delayed_web_refresh_task: asyncio.Task | None = None
         self._last_export_limit_summary: dict[str, Any] | None = None
         self._next_load_warning_ts = 0.0
-
-    def toggle_busy(func):
-        async def wrapper(self, *args, **kwargs):
-            if self._busy:
-                return
-            self._busy = True
-            error = None
-            try:
-                result = await func(self, *args, **kwargs)
-            except Exception as e:
-                _LOGGER.warning(f'Exception in wrapper {e}')
-                error = e
-            self._busy = False
-            if not error is None:
-                raise error
-            return result
-        return wrapper
 
     def _meter_prefix(self, unit_id: int) -> str:
         return f"meter_{int(unit_id)}_"
@@ -676,7 +682,10 @@ class Hub:
         _LOGGER.warning("Disabling Fronius web API for %s after auth failure: %s", self._host, err)
         self._webclient = None
         self._clear_web_api_data()
-        await async_get_token_store(self._hass).async_delete_token(self._host, API_USERNAME)
+        await async_get_token_store(self._hass).async_delete_token(
+            self._host,
+            self._api_username or API_USERNAME,
+        )
         await self._async_sync_solar_api_warning()
 
         if self._config_entry is not None:
@@ -691,18 +700,6 @@ class Hub:
                 translation_placeholders={"entry_title": self._config_entry.title or self._name},
                 data={"entry_id": self._config_entry.entry_id},
             )
-
-    async def _async_tech_web_job(self, func, *args):
-        """Run a tech-client job; on auth failure clear only _tech_webclient."""
-        if not self._tech_webclient:
-            return None
-        try:
-            return await self._hass.async_add_executor_job(func, *args)
-        except FroniusWebAuthError as err:
-            _LOGGER.warning("Disabling Fronius technician web API for %s after auth failure: %s", self._host, err)
-            self._tech_webclient = None
-            self.data["export_soft_limit"] = None
-            return None
 
     async def _async_web_job(
         self,
@@ -741,7 +738,7 @@ class Hub:
         api_soc_min = self._as_int(battery_config.get('BAT_M0_SOC_MIN'))
         self.data['api_soc_min'] = api_soc_min
         self.data['soc_maximum'] = self._as_int(battery_config.get('BAT_M0_SOC_MAX'))
-        self.data['api_backup_reserved'] = self._as_int(battery_config.get('HYB_BACKUP_RESERVED'))
+        self.data['backup_reserve'] = self._as_int(battery_config.get('HYB_BACKUP_RESERVED'))
         if effective_mode == 1 and api_soc_min is not None:
             self.data['soc_minimum'] = api_soc_min
         self.data['api_charge_from_ac'] = self._enabled_bool(battery_config.get('HYB_BM_CHARGEFROMAC'))
@@ -821,8 +818,14 @@ class Hub:
         inverter_info = await self._async_web_job(self._webclient.get_inverter_info)
         if isinstance(inverter_info, dict):
             self.data["inverter_temperature"] = inverter_info.get("temperature")
+            self.data["ac_mod_temperature"] = inverter_info.get("ac_mod_temperature")
+            self.data["dc_mod_temperature"] = inverter_info.get("dc_mod_temperature")
+            self.data["batt_mod_temperature"] = inverter_info.get("batt_mod_temperature")
         else:
             self.data["inverter_temperature"] = None
+            self.data["ac_mod_temperature"] = None
+            self.data["dc_mod_temperature"] = None
+            self.data["batt_mod_temperature"] = None
 
         modbus_config = await self._async_web_job(self._webclient.get_modbus_config)
         if isinstance(modbus_config, dict):
@@ -848,9 +851,7 @@ class Hub:
             if isinstance(battery_config, dict):
                 self._apply_web_battery_config(battery_config)
 
-        if self._tech_webclient:
-            export_limit_config = await self._async_tech_web_job(self._tech_webclient.get_export_limit_config)
-        elif self._webclient:
+        if self.tech_configured:
             export_limit_config = await self._async_web_job(self._webclient.get_export_limit_config)
         else:
             export_limit_config = None
@@ -871,7 +872,7 @@ class Hub:
 
         await self._async_sync_solar_api_warning()
 
-    @toggle_busy
+    @_serialized_write
     async def set_solar_api_enabled(self, enabled: bool) -> None:
         if not self._webclient:
             return
@@ -884,7 +885,7 @@ class Hub:
         self.data["api_solar_api_enabled"] = bool(enabled)
         await self._async_sync_solar_api_warning()
 
-    @toggle_busy
+    @_serialized_write
     async def reset_modbus_control(self) -> None:
         if not self._webclient:
             return
@@ -925,7 +926,7 @@ class Hub:
             soc_min=soc_min,
             soc_max=soc_max,
         )
-        next_backup_reserved = self._as_int(self.data.get('api_backup_reserved'))
+        next_backup_reserved = self._as_int(self.data.get('backup_reserve'))
         next_backup_reserved = 5 if next_backup_reserved is None else next_backup_reserved
         if next_backup_reserved < 5 or next_backup_reserved > 100:
             raise ValueError('Battery backup reserve must be between 5 and 100')
@@ -975,7 +976,7 @@ class Hub:
         self.data['soc_minimum'] = next_soc_min
         self.data['api_soc_min'] = next_soc_min
         self.data['soc_maximum'] = next_soc_max
-        self.data['api_backup_reserved'] = next_backup_reserved
+        self.data['backup_reserve'] = next_backup_reserved
         self._start_battery_write_transition(control_name)
         return next_soc_min, next_soc_max, next_backup_reserved
 
@@ -1099,7 +1100,7 @@ class Hub:
 
     @property
     def tech_configured(self) -> bool:
-        return self._tech_webclient is not None
+        return self.web_api_configured and self._api_username == TECHNICIAN_USERNAME
 
     @property
     def meter_configured(self):
@@ -1121,7 +1122,7 @@ class Hub:
     def storage_extended_control_mode(self):
         return self._client.storage_extended_control_mode
 
-    @toggle_busy
+    @_serialized_write
     async def set_mode(self, mode):
         if mode == 0:
             await self._client.set_auto_mode()
@@ -1151,7 +1152,7 @@ class Hub:
         elif mode == 7:
             await self._client.set_block_charge_mode()
 
-    @toggle_busy
+    @_serialized_write
     async def set_soc_minimum(self, value):
         soc_minimum = self._require_whole_number(value, 'SoC Minimum')
         if soc_minimum < 5 or soc_minimum > 100:
@@ -1163,23 +1164,23 @@ class Hub:
         if self._webclient and self._api_battery_mode_is_manual():
             await self._set_api_soc_manual(soc_min=soc_minimum, control_name='SoC Minimum')
 
-    @toggle_busy
+    @_serialized_write
     async def set_charge_limit(self, value):
         await self._client.set_charge_limit(value)
 
-    @toggle_busy
+    @_serialized_write
     async def set_discharge_limit(self, value):
         await self._client.set_discharge_limit(value)
 
-    @toggle_busy
+    @_serialized_write
     async def set_grid_charge_power(self, value):
         await self._client.set_grid_charge_power(value)
            
-    @toggle_busy
+    @_serialized_write
     async def set_grid_discharge_power(self, value):
         await self._client.set_grid_discharge_power(value)
 
-    @toggle_busy
+    @_serialized_write
     async def set_api_battery_mode(self, mode: int):
         if not self._webclient:
             return
@@ -1209,7 +1210,7 @@ class Hub:
             self.data['soc_maximum'] = 100
         self._start_battery_write_transition('Battery API mode')
 
-    @toggle_busy
+    @_serialized_write
     async def set_api_battery_power(self, value: float):
         if not self._webclient:
             return
@@ -1226,7 +1227,7 @@ class Hub:
         self._set_effective_api_battery_mode(1, 'manual')
         self._start_battery_write_transition('Target feed in')
 
-    @toggle_busy
+    @_serialized_write
     async def set_api_soc_values(
         self,
         soc_max: int | None = None,
@@ -1275,7 +1276,24 @@ class Hub:
         self.data['api_charge_from_ac'] = next_charge_from_ac
         self._start_battery_write_transition('battery charge source')
 
-    @toggle_busy
+    @_last_write_wins
+    async def set_backup_reserve(self, value: float) -> None:
+        """Set the backup power reserve; independent of the battery mode and the SoC window."""
+        client = self._webclient
+        if client is None:
+            raise RuntimeError("Fronius Web API is not configured")
+        percent = int(round(value))
+        if percent < 5 or percent > 100:
+            raise ValueError('Battery backup reserve must be between 5 and 100')
+        await self._async_web_job(
+            client.set_backup_reserve,
+            percent,
+            raise_on_auth_failure=True,
+        )
+        self.data['backup_reserve'] = percent
+        self._start_battery_write_transition('backup reserve')
+
+    @_serialized_write
     async def set_api_charge_sources(
         self,
         *,
@@ -1287,28 +1305,35 @@ class Hub:
             charge_from_ac=charge_from_ac,
         )
 
+    @_serialized_write
     async def set_ac_limit_rate(self, value):
         await self._client.set_ac_limit_rate(value)
 
+    @_serialized_write
     async def set_ac_limit_enable(self, value):
         await self._client.set_ac_limit_enable(value)
 
-    @toggle_busy
+    @_serialized_write
     async def set_power_factor(self, value):
         await self._client.set_power_factor(value)
 
-    @toggle_busy
+    @_serialized_write
     async def set_power_factor_enable(self, value):
         await self._client.set_power_factor_enable(value)
 
+    @_serialized_write
     async def set_conn_status(self, enable):
         await self._client.set_conn_status(enable)
 
+    @_serialized_write
     async def set_export_soft_limit(self, value: float) -> None:
-        if not self._tech_webclient:
-            raise RuntimeError("Technician credentials not configured — enter the technician password via Configure")
-        await self._async_tech_web_job(
-            self._tech_webclient.set_export_soft_limit,
+        if not self.tech_configured:
+            raise RuntimeError(
+                "Technician access is not selected — select it via Configure"
+            )
+        await self._async_web_job(
+            self._webclient.set_export_soft_limit,
             int(round(value)),
+            raise_on_auth_failure=True,
         )
         self.data["export_soft_limit"] = int(round(value))

@@ -36,24 +36,25 @@ After reboot of Home-Assistant, this integration can be configured through the i
 
 ### Web API Assisted Setup
 
-If you provide the inverter Web API customer password in the integration setup, the integration can:
+Choose either the `customer` or `technician` local Web API role during integration setup. After you provide the password for the selected role, the integration can:
 
 - auto-enable Modbus TCP during setup and relevant configuration changes
 - optionally restrict auto-enabled Modbus TCP to the Home Assistant host IP
 - derive configured smart meter addresses from `/api/components/PowerMeter/readable`
 - expose authenticated battery controls from `/api/config/batteries`
 - expose Modbus service diagnostics from `/api/config/modbus`
+- expose the export soft-limit control when the `technician` role is selected
 
 ![solar_login](images/solar_login.jpg?raw=true "storage")
 
-The Web API username is fixed to use the `customer` local login for your inverter. This is the login used when you connect using web browser locally to the inverter by its LAN ip address. This should have been provided by your installer during installation/setup up. This is not the Solar Web login used for the cloud (e.g. https://www.solarweb.com/).
+The selected Web API role is the local `customer` or `technician` login used when you connect with a web browser directly to the inverter by its LAN IP address. It is not the Solar.web cloud login (e.g. https://www.solarweb.com/). The `technician` role provides all integration features, including the export soft-limit control. The `customer` role does not expose that control.
 The integration stores a derived digest token in Home Assistant storage and does not keep the password in the config entry.
-During setup, reconfigure, options, or Repairs, the password is only requested if no stored token exists for the selected host or the existing token must be refreshed.
+During setup, reconfigure, options, or Repairs, the password is only requested if no stored token exists for the selected host and role or the existing token must be refreshed. Reconfigure the entry to switch between `customer` and `technician` access.
 
 ### Migrating Older Entries
 
 Entries created with older Modbus-only versions are migrated with safe defaults and keep working temporarily.
-If an entry has no valid stored Web API token for the configured host, Home Assistant raises a Repairs item that lets you review the host settings and enter the customer password to mint a new token.
+If an entry has no valid stored Web API token for the configured host and role, Home Assistant raises a Repairs item that lets you review the host and access-role settings and enter the corresponding password to mint a new token.
 
 ## Charging From Grid
 
@@ -95,6 +96,7 @@ The only built-in cross-protocol synchronization is the SoC minimum:
 | Charge from grid | Web API toggle for `HYB_EVU_CHARGEFROMGRID`. Turning it on also enables `Charge from AC`. Turning it off only disables the grid flag. This is also auto-enabled when Modbus `Charge from Grid` is selected from the integration.                                                                                                                                       |
 | Target Feed In   | Manual Fronius target feed-in in watts. Positive values target feed-in watts. Negative values target grid consumption watts, and the inverter will target that grid consumption even when PV power is available. This setting is ignored by the inverter when battery charging is unavailable. It is disabled unless `HYB_EM_MODE=1` and `BAT_M0_SOC_MODE=\"manual\"`. |
 | SoC Maximum      | `BAT_M0_SOC_MAX` from the Web API. Only available when `HYB_EM_MODE=1` and `BAT_M0_SOC_MODE=\"manual\"`, and it must not be set below `SoC Minimum`.                                                                                                                                                                                                                   |
+| Backup reserve   | `HYB_BACKUP_RESERVED` from the Web API: the share of the battery kept for backup power, 5 to 100 percent. Not the `SoC Minimum` above, which bounds normal operation; the reserve is what the inverter keeps for a grid outage. Independent of the battery mode and the SoC window, so it can be written in either mode.                                               |
 
 ### Storage Control Modes
 
