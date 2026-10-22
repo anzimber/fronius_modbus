@@ -197,8 +197,10 @@ Inverter
 
 ### Load sensor reliability and diagnostics
 
-Load is calculated from fresh adjacent inverter/primary-meter reads. Negative
-grid balances and invalid SunSpec values remain unknown instead of being clamped
-to zero or replaced with old readings. See [load calculation reliability](docs/load-calculation.md)
+Load is calculated from fresh adjacent inverter/primary-meter reads. Signed
+negative balances are preserved: with additional AC generation (such as a balcony
+solar inverter), this is household consumption minus that other generation,
+not total household consumption. Invalid or stale samples remain unknown;
+values are never clamped to zero or replaced with old readings. See [load calculation reliability](docs/load-calculation.md)
 for meter/battery sign conventions, timing limits, tests, and installation/rollback
 instructions, especially when applying the fix to a newer upstream version.

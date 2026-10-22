@@ -804,14 +804,10 @@ class Hub:
 
         # Signed total AC output already includes the DC-coupled battery's
         # contribution. Adding/subtracting DC storage power would count it twice.
+        # Preserve signed net demand: additional AC generation behind the grid
+        # meter makes this household consumption minus that generation. Its sign
+        # cannot distinguish valid generation from asynchronous device samples.
         candidate = float(inverter) + float(meter)
-        if candidate < 0:
-            self._reject_load(
-                "negative grid balance (inconsistent samples or unaccounted generation)",
-                inverter_w=inverter, meter_w=meter, balance_w=candidate,
-                window_seconds=window_seconds,
-            )
-            return
         self.data["load"] = round(candidate, 2)
         _LOGGER.debug(
             "Fronius load balance: inverter=%s W meter=%s W load=%s W request_window=%.3f s",

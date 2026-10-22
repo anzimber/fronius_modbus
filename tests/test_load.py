@@ -98,7 +98,7 @@ def test_negative_never_clamped_or_cached(hub, ac, meter, charge):
     hub.data["storage_charge_power"] = charge
     for _ in range(3):
         hub._apply_modbus_load_data()
-        assert hub.data["load"] is None
+        assert hub.data["load"] == pytest.approx(ac + meter, abs=0.005)
     sample(hub, ac=500, meter=100)
     hub._apply_modbus_load_data()
     assert hub.data["load"] == 600
@@ -121,14 +121,14 @@ def test_other_meter_locations(hub, location):
 
 def test_warning_rate_limit_and_recovery(hub, clock, caplog):
     caplog.set_level(logging.DEBUG)
-    sample(hub, ac=0, meter=-2000)
+    sample(hub, meter=None)
     for _ in range(20):
         hub._apply_modbus_load_data()
     warnings = lambda: [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings()) == 1
-    assert "balance_w" in warnings()[0].message
+    assert "missing, invalid or stale meter sample" in warnings()[0].message
     clock.now += 301
-    sample(hub, ac=0, meter=-2000,
+    sample(hub, meter=None,
            inverter_window=(400.8, 400.9), meter_window=(400.9, 401.0))
     hub._apply_modbus_load_data()
     assert len(warnings()) == 2
@@ -206,7 +206,7 @@ async def test_real_decoding_request_windows_and_recovery(hub, clock):
     assert client.data["meter_200_power"] == -5751
     assert client.get_load_sample_windows(200) == ((100, 100), (100.01, 100.01))
     hub._apply_modbus_load_data()
-    assert hub.data["load"] is None
+    assert hub.data["load"] == -171
 
     # Failed reads must invalidate success timestamps even within the same cycle.
     client.get_registers = AsyncMock(return_value=None)
@@ -314,3 +314,19 @@ async def test_predbat_signed_rate_writes_unchanged(hub, setter, address, percen
     hub._client.write_registers = AsyncMock()
     await getattr(hub._client, setter)(percent)
     hub._client.write_registers.assert_awaited_once_with(unit_id=1, address=address, payload=[payload])
+
+
+@pytest.mark.parametrize(("inverter", "balcony", "household", "expected"), [
+    (5000, 600, 200, -400),  # balcony output exceeds household consumption
+    (5000, 600, 900, 300),   # positive residual still excludes balcony output
+    (5000, 600, 600, 0),     # zero residual does not mean zero consumption
+    (-3000, 600, 200, -400), # same result while charging the DC battery from AC
+])
+def test_additional_ac_generator_is_signed_net_demand(hub, caplog, inverter, balcony, household, expected):
+    # Grid import is positive; generation by both inverters reduces that import.
+    grid = household - inverter - balcony
+    sample(hub, ac=inverter, meter=grid)
+    hub._apply_modbus_load_data()
+    assert hub.data["load"] == expected
+    assert hub.data["load"] + balcony == household
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
