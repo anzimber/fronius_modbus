@@ -193,3 +193,12 @@ Inverter
 - https://www.fronius.com/~/downloads/Solar%20Energy/Operating%20Instructions/42,0410,2649.pdf
 - https://github.com/binsentsu/home-assistant-solaredge-modbus/
 - https://github.com/bigramonk/byd_charging
+
+
+### Load sensor reliability and diagnostics
+
+Load is calculated from fresh adjacent inverter/primary-meter reads. Negative
+grid balances and invalid SunSpec values remain unknown instead of being clamped
+to zero or replaced with old readings. See [load calculation reliability](docs/load-calculation.md)
+for meter/battery sign conventions, timing limits, tests, and installation/rollback
+instructions, especially when applying the fix to a newer upstream version.

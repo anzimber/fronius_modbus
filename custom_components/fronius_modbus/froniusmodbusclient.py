@@ -110,6 +110,8 @@ class FroniusModbusClient(ExtModbusClient):
 
         self._ac_limit_enable_mask_until = 0.0
         self._power_factor_enable_mask_until = 0.0
+        self._load_inverter_request_start: float | None = None
+        self._load_meter_request_start: dict[int, float] = {}
         self._load_inverter_sample_ts: float | None = None
         self._load_meter_sample_ts: dict[int, float] = {}
         self._last_mppt_debug_summary: tuple[Any, ...] | None = None
@@ -168,9 +170,29 @@ class FroniusModbusClient(ExtModbusClient):
         self.data[key] = value
         return value
 
+    def _calculate_load_power(self, value: int, scale_factor: int) -> float | None:
+        """Reject SunSpec int16/sunssf sentinels before scaling signed power."""
+        if value == -32768 or not -10 <= scale_factor <= 10:
+            return None
+        return self.calculate_value(value, scale_factor, 2, -50000, 50000)
+
     def start_load_poll_cycle(self) -> None:
+        self._load_inverter_request_start = None
+        self._load_meter_request_start = {}
         self._load_inverter_sample_ts = None
         self._load_meter_sample_ts = {}
+
+    def get_load_sample_windows(
+        self, unit_id: int
+    ) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+        """Return successful host request intervals, not device sampling times."""
+        def window(start, end):
+            return (start, end) if start is not None and end is not None else None
+
+        return (
+            window(self._load_inverter_request_start, self._load_inverter_sample_ts),
+            window(self._load_meter_request_start.get(int(unit_id)), self._load_meter_sample_ts.get(int(unit_id))),
+        )
 
     def get_load_sample_timestamps(self, unit_id: int) -> tuple[float | None, float | None]:
         return (
@@ -639,6 +661,8 @@ class FroniusModbusClient(ExtModbusClient):
 
     @_safe_read("inverter")
     async def read_inverter_data(self):
+        self._load_inverter_sample_ts = None
+        self._load_inverter_request_start = time.monotonic()
         regs = await self.get_registers(unit_id=self._inverter_unit_id, address=INVERTER_ADDRESS, count=50)
         if regs is None:
             return False
@@ -662,7 +686,7 @@ class FroniusModbusClient(ExtModbusClient):
             self._set_calculated(key, raw[key], raw['A_SF'], 3, 0, 1000)
         for key in ('PPVphAB', 'PPVphBC', 'PPVphCA', 'PhVphA', 'PhVphB', 'PhVphC'):
             self._set_calculated(key, raw[key], raw['V_SF'])
-        self._set_calculated("acpower", raw['W'], raw['W_SF'], 2, -50000, 50000)
+        self.data["acpower"] = self._calculate_load_power(raw["W"], raw["W_SF"])
         self._set_calculated("var", raw['VAr'], raw['VAr_SF'], 2, -50000, 50000)
         self._set_calculated("line_frequency", raw['Hz'], raw['Hz_SF'], 2, 0, 100)
         self._set_calculated("acenergy", raw['WH'], raw['WH_SF'])
@@ -1123,6 +1147,8 @@ class FroniusModbusClient(ExtModbusClient):
     @_safe_read("meter")
     async def read_meter_data(self, unit_id, is_primary=False):
         """start reading meter data"""
+        self._load_meter_sample_ts.pop(int(unit_id), None)
+        self._load_meter_request_start[int(unit_id)] = time.monotonic()
         meter_prefix = self._meter_prefix(unit_id)
         regs = await self.get_registers(unit_id=unit_id, address=METER_ADDRESS, count=103)
         if regs is None:
@@ -1142,7 +1168,7 @@ class FroniusModbusClient(ExtModbusClient):
             ),
         )
 
-        acpower = self.calculate_value(raw['W'], raw['W_SF'], 2, -50000, 50000)
+        acpower = self._calculate_load_power(raw["W"], raw["W_SF"])
         m_frequency = self.calculate_value(raw['Hz'], raw['Hz_SF'], 2, 0, 100)
 
         for key in ('A', 'AphA', 'AphB', 'AphC'):
