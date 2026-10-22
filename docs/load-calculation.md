@@ -232,6 +232,25 @@ read-only probes are not a long-term deployment test. Hardware validation of
 battery charging/discharging transitions and Verto/Primo variants remains open.
 The installed component and active Predbat control have not been changed.
 
+### GitHub Actions results for PR #2
+
+The new [unit-test and syntax job](https://github.com/anzimber/fronius_modbus/actions/runs/39765862737)
+passed. The inherited validation workflows also ran and exposed unrelated failures:
+
+- [hassfest](https://github.com/anzimber/fronius_modbus/actions/runs/39765862844):
+  existing uppercase translation keys such as `A` and `Conn` in `translations/en.json`
+  violate the current translation-key schema; an existing `config.title` warning
+  was also reported. Translation files are byte-identical to the PR base.
+- [HACS](https://github.com/anzimber/fronius_modbus/actions/runs/39765862807):
+  the fork has no valid repository topics; 1 of 10 checks failed. This is repository
+  metadata outside the code diff. The manifest, HACS config and inherited workflow
+  files are also unchanged. A missing local brand icon produced a warning and
+  fallback, not the failing check.
+
+These failures are recorded rather than suppressed. Fixing translation keys can
+require coordinated entity/migration work; repository topics require a separate
+metadata change. Neither is part of the load-calculation fix.
+
 ## Installation, verification and rollback
 
 1. Back up the **entire currently installed** `custom_components/fronius_modbus`
