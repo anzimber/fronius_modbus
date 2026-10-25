@@ -16,6 +16,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from packaging import version as pkg_version
 
+from .load_sample_timing import load_pair_issue, load_window_issue
 from .froniusmodbusclient import FroniusModbusClient
 from .froniuswebclient import FroniusWebAuthError, FroniusWebClient
 
@@ -174,9 +175,8 @@ STORAGE_DATA_KEYS = (
 
 BATTERY_WRITE_MODBUS_RECOVERY_SECONDS = 30.0
 BATTERY_WRITE_WEB_REFRESH_DELAY_SECONDS = 10.0
-# Bound the entire adjacent request window, including waits/retries, not just
-# completion-time skew. Modbus does not expose device acquisition timestamps.
-LOAD_MAX_SAMPLE_SKEW_SECONDS = 0.5
+# Host-side Modbus timing limits are validated in load_sample_timing.py.
+# These are TCP request windows, not inverter or meter acquisition timestamps.
 LOAD_DIAGNOSTIC_INTERVAL_SECONDS = 300.0
 
 
@@ -774,16 +774,15 @@ class Hub:
 
         now = time.monotonic()
 
-        def fresh_window(window) -> bool:
-            return (
-                window is not None
-                and all(finite_number(value) for value in window)
-                and window[0] <= window[1] <= now
-                and now - window[0] <= LOAD_MAX_SAMPLE_SKEW_SECONDS
+        # A normal serial Modbus request can take >0.5 s. Reject genuinely
+        # slow or stale requests, not successful ~660 ms responses.
+        meter_issue = load_window_issue(meter_window, now)
+        if not finite_number(meter) or meter_issue is not None:
+            self._reject_load(
+                "invalid meter sample" if not finite_number(meter) else f"meter {meter_issue}",
+                meter=meter,
+                window=meter_window,
             )
-
-        if not finite_number(meter) or not fresh_window(meter_window):
-            self._reject_load("missing, invalid or stale meter sample", meter=meter, window=meter_window)
             return
 
         # Load/subload meters directly measure signed net consumption. A hidden
@@ -794,8 +793,21 @@ class Hub:
         if location != 0:
             self._reject_load("unsupported primary meter location", location=location)
             return
-        if not finite_number(inverter) or not fresh_window(inverter_window):
-            self._reject_load("missing, invalid or stale inverter sample", inverter=inverter, window=inverter_window)
+        inverter_issue = load_window_issue(inverter_window, now)
+        if not finite_number(inverter) or inverter_issue is not None:
+            self._reject_load(
+                "invalid inverter sample" if not finite_number(inverter) else f"inverter {inverter_issue}",
+                inverter=inverter,
+                window=inverter_window,
+            )
+            return
+        pair_issue = load_pair_issue(inverter_window, meter_window)
+        if pair_issue is not None:
+            self._reject_load(
+                pair_issue,
+                inverter_window=inverter_window,
+                meter_window=meter_window,
+            )
             return
         window_seconds = max(inverter_window[1], meter_window[1]) - min(inverter_window[0], meter_window[0])
 
